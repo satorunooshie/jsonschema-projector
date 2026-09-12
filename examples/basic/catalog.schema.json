@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ComponentCatalog",
+  "types": {
+    "TextVariant": {
+      "type": "string",
+      "enum": ["body", "caption", "heading"]
+    }
+  },
+  "components": {
+    "Text": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string"
+        },
+        "variant": {
+          "$ref": "#/types/TextVariant"
+        }
+      },
+      "required": ["value"]
+    },
+    "Image": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "alt": {
+          "type": "string"
+        }
+      },
+      "required": ["url"]
+    },
+    "Container": {
+      "type": "object",
+      "properties": {
+        "child": {
+          "oneOf": [
+            {
+              "$ref": "#/components/Text"
+            },
+            {
+              "$ref": "#/components/Image"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

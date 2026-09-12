@@ -1,0 +1,35 @@
+input:
+  path: catalog.schema.json
+
+output:
+  path: build/component.projected.schema.json
+  pretty: true
+  finalNewline: true
+
+project:
+  title: Component
+  includeDefinitions:
+    - pointer: "#/types"
+    - pointer: "#/components"
+  rewriteRefs:
+    - from: "#/types/"
+      to: "#/$defs/"
+    - from: "#/components/"
+      to: "#/$defs/"
+  root:
+    kind: oneOf
+    from: "#/components"
+  checkRefs: true
+
+validate:
+  schema: true
+  defaultDraft: "2020-12"
+
+generate:
+  go:
+    package: component
+    output: internal/component/types.gen.go
+    rootType: Component
+    tags:
+      - json
+      - yaml

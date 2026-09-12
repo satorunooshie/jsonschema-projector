@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/satorunooshie/jsonschema-projector/schema/projector.config.schema.json",
+  "title": "jsonschema-projector configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "input": { "$ref": "#/$defs/input" },
+    "output": { "$ref": "#/$defs/output" },
+    "project": { "$ref": "#/$defs/project" },
+    "validate": { "$ref": "#/$defs/validate" },
+    "generate": { "$ref": "#/$defs/generate" }
+  },
+  "$defs": {
+    "input": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "path": { "type": "string", "minLength": 1 } },
+      "required": ["path"]
+    },
+    "output": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "pretty": { "type": "boolean" },
+        "finalNewline": { "type": "boolean" }
+      }
+    },
+    "project": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "format": "uri-reference" },
+        "title": { "type": "string" },
+        "includeDefinitions": {
+          "type": "array", "items": { "$ref": "#/$defs/definitionSource" }
+        },
+        "rewriteRefs": {
+          "type": "array", "items": { "$ref": "#/$defs/refRewrite" }
+        },
+        "root": { "$ref": "#/$defs/root" },
+        "overwriteDefinitions": { "type": "boolean" },
+        "checkRefs": { "type": "boolean" }
+      }
+    },
+    "definitionSource": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "pointer": { "type": "string", "minLength": 1 } },
+      "required": ["pointer"]
+    },
+    "refRewrite": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "from": { "type": "string", "minLength": 1 },
+        "to": { "type": "string" }
+      },
+      "required": ["from", "to"]
+    },
+    "root": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "oneOf" },
+        "from": { "type": "string", "minLength": 1 },
+        "names": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["from"]
+    },
+    "validate": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "schema": { "type": "boolean" },
+        "defaultDraft": { "enum": ["2020-12", "2019-09", "7", "6", "4"] },
+        "assertFormat": { "type": "boolean" },
+        "assertContent": { "type": "boolean" }
+      }
+    },
+    "generate": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "go": { "$ref": "#/$defs/goGenerate" } }
+    },
+    "goGenerate": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "package": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "output": { "type": "string", "minLength": 1 },
+        "rootType": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "capitalizations": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["package", "output"]
+    }
+  }
+}

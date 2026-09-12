@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "a b/c~d": { "type": "string" }
+  },
+  "type": "object",
+  "properties": {
+    "value": { "$ref": "#/$defs/a%20b~1c~0d" }
+  }
+}

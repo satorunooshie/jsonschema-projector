@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "value": {
+      "allOf": [
+        { "type": "string" },
+        { "minLength": 1 }
+      ]
+    },
+    "kind": { "enum": ["text", "image"] }
+  },
+  "required": ["value"],
+  "oneOf": [
+    { "required": ["kind"] },
+    { "not": { "required": ["kind"] } }
+  ],
+  "if": { "properties": { "kind": { "const": "text" } } },
+  "then": { "required": ["value"] },
+  "unevaluatedProperties": false
+}

@@ -1,0 +1,8 @@
+/bin/
+/build/
+/coverage.out
+/dist/
+/jsonschema-projector
+/tmp/
+examples/basic/build/
+examples/basic/internal/
