@@ -15,7 +15,7 @@ import (
 	"github.com/satorunooshie/jsonschema-projector/projector"
 )
 
-var golden = flag.Bool("golden", false, "golden fixtureを再生成する")
+var golden = flag.Bool("golden", false, "regenerate golden fixtures")
 
 func FuzzGenerateGoNeverPanicsOnJSONObjects(f *testing.F) {
 	for _, seed := range []string{
@@ -1298,6 +1298,51 @@ func TestGeneratedUnionContainersDecode(t *testing.T) {
 	}
 }
 
+func TestGeneratedStructWithMultipleUnionFieldsDecodesOnce(t *testing.T) {
+	union := func() map[string]any {
+		return map[string]any{"anyOf": []any{
+			map[string]any{"type": "string"},
+			map[string]any{"type": "boolean"},
+		}}
+	}
+	schema := schemaWithDef("MultipleUnions", map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"first":  union(),
+			"second": map[string]any{"type": "array", "items": union()},
+			"third":  map[string]any{"type": "object", "additionalProperties": union()},
+		},
+	})
+	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-"}, schema)
+	if got := strings.Count(source, "func (v *MultipleUnions) UnmarshalJSON"); got != 1 {
+		t.Fatalf("generated %d UnmarshalJSON methods for MultipleUnions, want 1:\n%s", got, source)
+	}
+	assertGeneratedPackageTests(t, source, `package component
+
+import (
+	"encoding/json"
+	"reflect"
+	"testing"
+)
+
+func TestMultipleUnionFieldsRuntime(t *testing.T) {
+	var value MultipleUnions
+	if err := json.Unmarshal([]byte("{\"first\":\"one\",\"second\":[true,\"two\"],\"third\":{\"a\":\"three\",\"b\":false}}"), &value); err != nil {
+		t.Fatal(err)
+	}
+	if reflect.TypeOf(value.First).Name() != "StringValue" {
+		t.Fatalf("first decoded as %T", value.First)
+	}
+	if len(value.Second) != 2 || reflect.TypeOf(value.Second[0]).Name() != "BooleanValue" || reflect.TypeOf(value.Second[1]).Name() != "StringValue" {
+		t.Fatalf("second decoded as %#v", value.Second)
+	}
+	if len(value.Third) != 2 || reflect.TypeOf(value.Third["a"]).Name() != "StringValue" || reflect.TypeOf(value.Third["b"]).Name() != "BooleanValue" {
+		t.Fatalf("third decoded as %#v", value.Third)
+	}
+}
+`)
+}
+
 func TestEmbeddedTemplatesAreComplete(t *testing.T) {
 	t.Parallel()
 
@@ -1308,6 +1353,7 @@ func TestEmbeddedTemplatesAreComplete(t *testing.T) {
 		"source",
 		"struct",
 		"struct-unmarshal",
+		"struct-unmarshal-map",
 		"union",
 		"union-case",
 		"union-decoder",
