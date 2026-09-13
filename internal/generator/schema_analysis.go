@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"reflect"
@@ -86,6 +87,23 @@ func (g *nativeGenerator) parseSchemaObject(node *schemaNode, obj map[string]any
 	node.Description = stringValue(obj, "description")
 	node.XGoName = stringValue(obj, "x-go-name")
 	node.Format = stringValue(obj, "format")
+	node.Pattern = stringValue(obj, "pattern")
+	for _, field := range []struct {
+		name string
+		dst  **float64
+	}{
+		{name: "minimum", dst: &node.Minimum}, {name: "maximum", dst: &node.Maximum},
+		{name: "exclusiveMinimum", dst: &node.ExclusiveMinimum}, {name: "exclusiveMaximum", dst: &node.ExclusiveMaximum},
+	} {
+		if raw, ok := obj[field.name]; ok {
+			if value, ok := schemaNumber(raw); ok {
+				v := value
+				*field.dst = &v
+			} else {
+				g.addError(projector.CodeUnsupportedSchema, field.name+" must be a number", childPointer(node.Pointer, field.name), "")
+			}
+		}
+	}
 
 	if raw, ok := obj["type"]; ok {
 		node.Types = g.parseTypeList(raw, childPointer(node.Pointer, "type"))
@@ -218,6 +236,40 @@ func (g *nativeGenerator) parseSchemaObject(node *schemaNode, obj map[string]any
 	if raw, ok := obj["const"]; ok {
 		node.Const = raw
 		node.HasConst = true
+	}
+}
+
+func schemaNumber(value any) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int8:
+		return float64(v), true
+	case int16:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint8:
+		return float64(v), true
+	case uint16:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	case json.Number:
+		value, err := strconv.ParseFloat(v.String(), 64)
+		return value, err == nil
+	default:
+		return 0, false
 	}
 }
 
@@ -493,7 +545,7 @@ func schemaNodesEquivalent(a, b *schemaNode, seen map[[2]*schemaNode]bool) bool 
 	}
 	seen[pair] = true
 
-	if !boolPointersEqual(a.Bool, b.Bool) || a.Ref != b.Ref || a.XGoName != b.XGoName || a.Format != b.Format || !slices.Equal(a.Types, b.Types) ||
+	if !boolPointersEqual(a.Bool, b.Bool) || a.Ref != b.Ref || a.XGoName != b.XGoName || a.Format != b.Format || a.Pattern != b.Pattern || !floatPointersEqual(a.Minimum, b.Minimum) || !floatPointersEqual(a.Maximum, b.Maximum) || !floatPointersEqual(a.ExclusiveMinimum, b.ExclusiveMinimum) || !floatPointersEqual(a.ExclusiveMaximum, b.ExclusiveMaximum) || !slices.Equal(a.Types, b.Types) ||
 		!maps.Equal(a.Required, b.Required) || a.AdditionalPropertiesSet != b.AdditionalPropertiesSet ||
 		a.AdditionalPropertiesAllowed != b.AdditionalPropertiesAllowed || a.AdditionalPropertiesIsBoolean != b.AdditionalPropertiesIsBoolean ||
 		a.HasConst != b.HasConst || !jsonValuesEqual(a.Const, b.Const) || !jsonValuesEqual(a.Enum, b.Enum) {
@@ -542,6 +594,13 @@ func schemaNodesEquivalent(a, b *schemaNode, seen map[[2]*schemaNode]bool) bool 
 		}
 	}
 	return true
+}
+
+func floatPointersEqual(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func boolPointersEqual(a, b *bool) bool {
