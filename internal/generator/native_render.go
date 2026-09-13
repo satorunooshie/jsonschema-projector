@@ -61,7 +61,7 @@ func (g *nativeGenerator) addUnionDecl(name string, node *schemaNode, root bool)
 	if !ok {
 		return
 	}
-	if field, _ := unionDiscriminator(variants); field == "" {
+	if field, _ := g.unionDiscriminator(variants); field == "" {
 		dispatchable := false
 		for _, variant := range variants {
 			if primitiveSchema(variant.Node) != "" || len(variant.Node.Required) > 0 || len(variant.Node.Properties) > 0 {
@@ -101,7 +101,7 @@ func (g *nativeGenerator) addUnionDecl(name string, node *schemaNode, root bool)
 	if g.cfg.Unions.Dispatch == "schema-validation" {
 		g.needsSync = true
 	}
-	if field, _ := unionDiscriminator(variants); field != "" {
+	if field, _ := g.unionDiscriminator(variants); field != "" {
 		g.needsSync = true
 	}
 
@@ -123,7 +123,7 @@ func (g *nativeGenerator) unionDecoder(union unionInfo) string {
 			Body:  g.renderEmbeddedFragment("union-case", variant),
 		})
 	}
-	if field, values := unionDiscriminator(union.Variants); field != "" {
+	if field, values := g.unionDiscriminator(union.Variants); field != "" {
 		d.Discriminator = field
 		d.Registration = true
 		g.needsSync = true
@@ -145,7 +145,7 @@ func (g *nativeGenerator) unionDecoder(union unionInfo) string {
 				continue
 			}
 			seen[typ] = true
-			cases := map[string]string{"string": `case '"':`, "number": `case '-', '0','1','2','3','4','5','6','7','8','9':`, "boolean": `case 't','f':`}
+			cases := map[string]string{"string": `case '"':`, "number": `case '-', '0','1','2','3','4','5','6','7','8','9':`, "boolean": `case 't','f':`, "null": `case 'n':`}
 			if c, ok := cases[typ]; ok {
 				d.TokenCases = append(d.TokenCases, unionDecoderTokenBranch{Cases: c, Body: g.renderEmbeddedFragment("union-case", variant)})
 			}
@@ -178,19 +178,31 @@ func jsonMatchCondition(variant unionVariant) string {
 	return strings.Join(parts, " && ")
 }
 
-func unionDiscriminator(variants []unionVariant) (string, map[string]unionVariant) {
+func (g *nativeGenerator) unionDiscriminator(variants []unionVariant) (string, map[string]unionVariant) {
 	values := map[string]unionVariant{}
 	field := ""
 	for _, v := range variants {
-		for name, prop := range v.Node.Properties {
+		node := g.resolvedNode(v.Node, map[*schemaNode]bool{})
+		if node == nil {
+			return "", nil
+		}
+		for name, prop := range node.Properties {
+			prop = g.resolvedNode(prop, map[*schemaNode]bool{})
+			if prop == nil {
+				continue
+			}
 			if prop.HasConst {
 				if value, ok := prop.Const.(string); ok {
 					if field == "" {
 						field = name
 					}
-					if field == name {
-						values[value] = v
+					if field != name || !node.Required[name] {
+						return "", nil
 					}
+					if _, exists := values[value]; exists {
+						return "", nil
+					}
+					values[value] = v
 				}
 			}
 		}
@@ -201,11 +213,29 @@ func unionDiscriminator(variants []unionVariant) (string, map[string]unionVarian
 	return field, values
 }
 
+func (g *nativeGenerator) resolvedNode(node *schemaNode, seen map[*schemaNode]bool) *schemaNode {
+	for node != nil && node.Ref != "" {
+		if seen[node] {
+			return nil
+		}
+		seen[node] = true
+		name, ok := localDefinitionRef(node.Ref)
+		if !ok {
+			return nil
+		}
+		node = g.defs[name]
+	}
+	return node
+}
+
 func primitiveSchema(node *schemaNode) string {
 	if node == nil {
 		return ""
 	}
 	types := withoutNull(node.Types)
+	if len(node.Types) == 1 && node.Types[0] == "null" {
+		return "null"
+	}
 	if len(types) == 1 {
 		switch types[0] {
 		case "string":
@@ -294,13 +324,17 @@ func (g *nativeGenerator) addStructDecl(name string, node *schemaNode) {
 			continue
 		}
 		fieldName := g.exportedIdentifier(firstNonEmpty(prop.XGoName, propertyName))
-		unionName, slice := unionFieldName(g, prop, name+fieldName)
+		unionName, mode := unionFieldName(g, prop, name+fieldName)
 		g.needsJSON = true
 		decoder := "Unmarshal" + unionName
-		if slice {
+		if mode == "slice" {
 			decoder += "Slice"
 		}
-		methods = append(methods, g.renderEmbeddedFragment("struct-unmarshal", structUnmarshalTemplateData{Name: name, Field: fieldName, Tag: mustJSONTag(propertyName), Decoder: decoder}))
+		fragment := "struct-unmarshal"
+		if mode == "map" {
+			fragment = "struct-unmarshal-map"
+		}
+		methods = append(methods, g.renderEmbeddedFragment(fragment, structUnmarshalTemplateData{Name: name, Field: fieldName, Tag: mustJSONTag(propertyName), Decoder: decoder, UnionType: unionName, Mode: mode}))
 	}
 	description := ""
 	if node.Description != "" {
@@ -321,14 +355,23 @@ func (g *nativeGenerator) containsUnion(node *schemaNode) bool {
 			node = g.defs[name]
 		}
 	}
-	return node != nil && (len(node.OneOf) > 0 || len(node.AnyOf) > 0 || (node.Items != nil && (len(node.Items.OneOf) > 0 || len(node.Items.AnyOf) > 0)))
+	return node != nil && (g.isUnionNode(node) ||
+		(g.isUnionNode(node.Items)) || g.isUnionNode(node.AdditionalProperties))
 }
 
-func unionFieldName(g *nativeGenerator, node *schemaNode, context string) (string, bool) {
-	if node.Items != nil && (len(node.Items.OneOf) > 0 || len(node.Items.AnyOf) > 0) {
-		return g.schemaGoType(node.Items, context+"Item").Expr, true
+func unionFieldName(g *nativeGenerator, node *schemaNode, context string) (string, string) {
+	if node != nil && g.isUnionNode(node.Items) {
+		return g.schemaGoType(node.Items, context+"Item").Expr, "slice"
 	}
-	return g.schemaGoType(node, context).Expr, false
+	if node != nil && g.isUnionNode(node.AdditionalProperties) {
+		return g.schemaGoType(node.AdditionalProperties, context+"Value").Expr, "map"
+	}
+	return g.schemaGoType(node, context).Expr, "value"
+}
+
+func (g *nativeGenerator) isUnionNode(node *schemaNode) bool {
+	node = g.resolvedNode(node, map[*schemaNode]bool{})
+	return node != nil && (len(node.OneOf) > 0 || len(node.AnyOf) > 0)
 }
 
 func (g *nativeGenerator) addAliasDecl(name, underlying string, node *schemaNode) {

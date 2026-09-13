@@ -434,22 +434,10 @@ func TestGenerateGoReportsUnsupportedSchemas(t *testing.T) {
 			wantMessage: "enum values are not compatible",
 		},
 		{
-			name:        "multiple non-null types",
-			schema:      schemaWithDef("Thing", map[string]any{"type": []any{"string", "integer"}}),
-			wantPointer: "#/$defs/Thing/type",
-			wantMessage: "multiple non-null JSON types are not supported",
-		},
-		{
 			name:        "false schema",
 			schema:      schemaWithDef("Thing", false),
 			wantPointer: "#/$defs/Thing",
 			wantMessage: "false schemas cannot be represented",
-		},
-		{
-			name:        "null only",
-			schema:      schemaWithDef("Thing", map[string]any{"type": []any{"null"}}),
-			wantPointer: "#/$defs/Thing",
-			wantMessage: "null-only schemas cannot be represented",
 		},
 	}
 

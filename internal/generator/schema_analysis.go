@@ -89,6 +89,21 @@ func (g *nativeGenerator) parseSchemaObject(node *schemaNode, obj map[string]any
 
 	if raw, ok := obj["type"]; ok {
 		node.Types = g.parseTypeList(raw, childPointer(node.Pointer, "type"))
+		// A type array is an implicit union. Route it through the same
+		// machinery as explicit anyOf/oneOf, including null members.
+		if len(node.Types) > 1 {
+			types := slices.Clone(node.Types)
+			node.Types = nil
+			node.AnyOf = make([]*schemaNode, 0, len(types))
+			for i, typ := range types {
+				node.AnyOf = append(node.AnyOf, &schemaNode{
+					Pointer: childPointer(childPointer(node.Pointer, "type"), strconv.Itoa(i)),
+					Types:   []string{typ}, Properties: map[string]*schemaNode{},
+					Required: map[string]bool{}, PatternProperties: map[string]*schemaNode{},
+					AdditionalPropertiesAllowed: true,
+				})
+			}
+		}
 	}
 	if raw, ok := obj["required"]; ok {
 		node.Required = g.parseRequired(raw, childPointer(node.Pointer, "required"))

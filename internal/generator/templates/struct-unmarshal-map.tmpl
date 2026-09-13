@@ -1,0 +1,27 @@
+func (v *{{.Name}}) UnmarshalJSON(data []byte) error {
+	type Alias {{.Name}}
+	var aux struct {
+		*Alias
+		{{.Field}} json.RawMessage {{.Tag}}
+	}
+	aux.Alias = (*Alias)(v)
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if len(aux.{{.Field}}) != 0 {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(aux.{{.Field}}, &raw); err != nil {
+			return err
+		}
+		decoded := make(map[string]{{.UnionType}})
+		for key, item := range raw {
+			value, err := {{.Decoder}}(item)
+			if err != nil {
+				return err
+			}
+			decoded[key] = value
+		}
+		v.{{.Field}} = decoded
+	}
+	return nil
+}

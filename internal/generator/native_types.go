@@ -39,8 +39,7 @@ func (g *nativeGenerator) schemaGoType(node *schemaNode, contextName string) goT
 		return goType{Expr: "any", Nilable: true}
 	}
 	if len(types) == 0 && len(node.Types) > 0 {
-		g.addError(projector.CodeUnsupportedSchema, "null-only schemas cannot be represented as useful Go DTO types", node.Pointer, "")
-		return goType{Expr: "any", Nilable: true}
+		return goType{Expr: "struct{}", Pointerable: true}
 	}
 
 	var out goType
@@ -303,6 +302,8 @@ func (g *nativeGenerator) unionVariants(unionName string, node *schemaNode) ([]u
 				base = "NumberValue"
 			case "boolean":
 				base = "BooleanValue"
+			case "null":
+				base = "NullValue"
 			}
 			variantName := g.reserveTypeName(g.exportedIdentifier(base), item.Pointer, false)
 			underlying := g.schemaGoType(item, variantName)

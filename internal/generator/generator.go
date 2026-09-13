@@ -97,7 +97,6 @@ func GenerateGoSource(ctx context.Context, cfg projector.GoGenerateConfig, schem
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
-
 	gen := newNativeGenerator(cfg, schema)
 	source := gen.Source()
 	if gen.diagnostics.HasErrors() {
@@ -164,12 +163,45 @@ func (g *nativeGenerator) normalizeInlineNode(node *schemaNode, context string, 
 	} else {
 		g.normalizeInlineNode(node.Items, context+"Item", stack)
 	}
+	if node.AdditionalProperties != nil && (len(node.AdditionalProperties.OneOf) > 0 || len(node.AdditionalProperties.AnyOf) > 0) && node.AdditionalProperties.Ref == "" {
+		value := node.AdditionalProperties
+		defName := g.syntheticDefinitionName(context + "Value")
+		g.defs[defName] = value
+		node.AdditionalProperties = g.parseSchema(map[string]any{"$ref": "#/$defs/" + defName}, value.Pointer)
+		g.normalizeInlineNode(value, defName, stack)
+	} else {
+		g.normalizeInlineNode(node.AdditionalProperties, context+"Value", stack)
+	}
 	for _, variant := range append(append([]*schemaNode{}, node.OneOf...), node.AnyOf...) {
 		g.normalizeInlineNode(variant, context+"Variant", stack)
 	}
 	for _, member := range node.AllOf {
 		g.normalizeInlineNode(member, context+"Base", stack)
 	}
+	variants := node.OneOf
+	if len(variants) == 0 {
+		variants = node.AnyOf
+	}
+	for i, variant := range variants {
+		if variant == nil || variant.Ref != "" || !g.isInlineObjectSchema(variant) {
+			continue
+		}
+		// An inline object in a union is promoted to a local definition. The
+		// context is derived from the parent path (e.g. ParentValueObject).
+		defName := g.syntheticDefinitionName(context + "Object")
+		g.defs[defName] = variant
+		variants[i] = g.parseSchema(map[string]any{"$ref": "#/$defs/" + defName}, variant.Pointer)
+		g.normalizeInlineNode(variant, defName, stack)
+	}
+}
+
+func (g *nativeGenerator) isInlineObjectSchema(node *schemaNode) bool {
+	if node == nil || node.Bool != nil || node.Ref != "" || len(node.OneOf) > 0 || len(node.AnyOf) > 0 {
+		return false
+	}
+	types := withoutNull(node.Types)
+	return (len(types) == 0 || (len(types) == 1 && types[0] == "object")) &&
+		(len(node.Properties) > 0 || len(node.Required) > 0 || node.AdditionalPropertiesSet)
 }
 
 func (g *nativeGenerator) syntheticDefinitionName(base string) string {

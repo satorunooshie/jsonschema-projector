@@ -72,7 +72,7 @@ type unionTemplateData struct {
 }
 
 type structUnmarshalTemplateData struct {
-	Name, Field, Tag, Decoder string
+	Name, Field, Tag, Decoder, UnionType, Mode string
 }
 
 type aliasTemplateData struct {
