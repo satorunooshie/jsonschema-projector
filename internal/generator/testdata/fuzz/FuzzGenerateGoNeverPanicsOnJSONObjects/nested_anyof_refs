@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte(`{"$defs":{"Choice":{"anyOf":[{"$ref":"#/$defs/Text"},{"$ref":"#/$defs/Image"}]},"Text":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]},"Image":{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}},"type":"object","properties":{"choice":{"$ref":"#/$defs/Choice"}}}`)

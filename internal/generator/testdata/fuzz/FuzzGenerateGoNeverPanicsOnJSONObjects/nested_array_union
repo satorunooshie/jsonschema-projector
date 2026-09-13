@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte(`{"type":"object","properties":{"items":{"type":"array","items":{"oneOf":[{"$ref":"#/$defs/A"},{"$ref":"#/$defs/B"}]}}},"$defs":{"A":{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]},"B":{"type":"object","properties":{"b":{"type":"integer"}},"required":["b"]}}}`)

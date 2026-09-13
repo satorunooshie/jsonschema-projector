@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte(`{"$defs":{"Status":{"type":"string","enum":["open","closed"]},"Code":{"type":"integer","enum":[1,2,3]}},"type":"object","properties":{"status":{"$ref":"#/$defs/Status"},"code":{"$ref":"#/$defs/Code"}}}`)

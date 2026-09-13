@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte(`{"$defs":{"Leaf":{"type":"object","properties":{"leaf":{"type":"string"}}},"Middle":{"allOf":[{"$ref":"#/$defs/Leaf"},{"type":"object","properties":{"middle":{"anyOf":[{"type":"string"},{"type":"boolean"}]}}}]},"Root":{"allOf":[{"$ref":"#/$defs/Middle"},{"type":"object","properties":{"root":{"$ref":"#/$defs/Root"}}}]}},"$ref":"#/$defs/Root"}`)

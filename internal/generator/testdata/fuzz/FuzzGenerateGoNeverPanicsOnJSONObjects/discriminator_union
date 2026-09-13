@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte(`{"title":"Component","oneOf":[{"$ref":"#/$defs/Button"},{"$ref":"#/$defs/Text"}],"$defs":{"Button":{"type":"object","properties":{"component":{"const":"Button"},"label":{"type":"string"}},"required":["component","label"]},"Text":{"type":"object","properties":{"component":{"const":"Text"},"value":{"type":"string"}},"required":["component","value"]}}}`)

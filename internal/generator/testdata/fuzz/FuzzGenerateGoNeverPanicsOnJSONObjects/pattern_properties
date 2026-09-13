@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte(`{"type":"object","patternProperties":{"^x-":{"type":"string"}},"additionalProperties":false}`)

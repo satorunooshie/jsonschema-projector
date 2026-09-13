@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte(`{"type":"object","properties":{"x-y":{"type":"string"},"日本語":{"type":"string"},"quote\"key":{"type":"string"}},"required":["x-y"]}`)

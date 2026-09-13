@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte(`{"$defs":{"Any":true,"None":false},"oneOf":[{"$ref":"#/$defs/Any"},{"$ref":"#/$defs/None"}]}`)

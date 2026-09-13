@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte(`{"$defs":{"Node":{"allOf":[{"type":"object","properties":{"value":{"type":"string"},"next":{"$ref":"#/$defs/Node"}},"required":["value"]}]}},"$ref":"#/$defs/Node"}`)
