@@ -115,11 +115,14 @@ for editor completion and CI validation.
 
 ## Generation scope
 
-The Go generator converts only explicitly supported schema shapes into DTOs.
-Supported shapes include objects, arrays, primitives, enums, direct local
-references, and limited `oneOf`, `allOf`, and `anyOf` compositions. `not`,
-conditionals, external references, and incompatible compositions are reported
-as errors.
+The Go generator converts supported JSON Schema shapes into typed DTOs. It
+supports objects, arrays, maps, primitives, enums, direct local references,
+and `oneOf`/`anyOf` unions. Ambiguous union matches return
+`ErrAmbiguousVariant` by default. Schema validation remains separate from DTO
+decoding, and unsupported shapes are reported as diagnostics.
+
+For union generation details, see
+[`docs/union-generation.md`](docs/union-generation.md).
 
 Generated DTOs are typed representations, not replacements for runtime
 validation. Use `jsonschema/v6` when you need JSON Schema semantics at runtime.
