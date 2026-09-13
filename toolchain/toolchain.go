@@ -103,6 +103,9 @@ func runGenerate(ctx context.Context, cfg projector.Config, stdout io.Writer, pr
 	if cfg, err = snapshotConfig(cfg); err != nil {
 		return result, err
 	}
+	if err := cfg.ValidateForWrite(); err != nil {
+		return result, err
+	}
 	generateDiagnostics := generator.ValidateGoConfig(cfg.Generate.Go).WithStage(StageGenerate)
 	result.Diagnostics = append(result.Diagnostics, generateDiagnostics...)
 	if result.Diagnostics.HasErrors() {

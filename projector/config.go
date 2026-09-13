@@ -1,6 +1,7 @@
 package projector
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -68,10 +69,58 @@ func (c Config) Validate() error {
 	if c.Input.Path == "" {
 		return &ConfigError{Field: "input.path", Message: ErrInputRequired.Error(), Cause: ErrInputRequired}
 	}
+	for i, source := range c.Project.IncludeDefinitions {
+		if source.Pointer == "" {
+			return &ConfigError{Field: "project.includeDefinitions", Message: fmt.Sprintf("entry %d pointer is required", i), Cause: ErrInvalidConfig}
+		}
+	}
+	for i, rewrite := range c.Project.RewriteRefs {
+		if rewrite.From == "" {
+			return &ConfigError{Field: "project.rewriteRefs", Message: fmt.Sprintf("entry %d from is required", i), Cause: ErrInvalidConfig}
+		}
+	}
+	if c.Project.Root != nil {
+		if c.Project.Root.Kind != "" && c.Project.Root.Kind != "oneOf" {
+			return &ConfigError{Field: "project.root.kind", Message: fmt.Sprintf("unsupported root kind %q", c.Project.Root.Kind), Cause: ErrInvalidConfig}
+		}
+		if c.Project.Root.From == "" {
+			return &ConfigError{Field: "project.root.from", Message: "root source is required", Cause: ErrInvalidConfig}
+		}
+	}
+	if c.Validation.DefaultDraft != "" {
+		switch c.Validation.DefaultDraft {
+		case "2020", "2020-12", "draft2020", "draft2020-12", "2019", "2019-09", "draft2019", "draft2019-09", "7", "07", "draft7", "draft-07", "6", "06", "draft6", "draft-06", "4", "04", "draft4", "draft-04":
+		default:
+			return &ConfigError{Field: "validate.defaultDraft", Message: fmt.Sprintf("unsupported default draft %q", c.Validation.DefaultDraft), Cause: ErrInvalidConfig}
+		}
+	}
 	if c.Generate != nil && c.Generate.Go == nil {
 		return &ConfigError{Field: "generate.go", Message: "generate.go config is required", Cause: ErrInvalidConfig}
 	}
+	if c.Generate != nil && c.Generate.Go != nil && c.Output.Path != "" && c.Generate.Go.Output != "" && samePath(c.Output.Path, c.Generate.Go.Output) {
+		return &ConfigError{Field: "generate.go.output", Message: "must differ from output.path", Cause: ErrInvalidConfig}
+	}
 	return nil
+}
+
+// ValidateForWrite checks configuration used by an operation that writes the
+// projected schema artifact. Check does not need this requirement because it
+// never writes output.
+func (c Config) ValidateForWrite() error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if c.Output.Path == "" {
+		return &ConfigError{Field: "output.path", Message: ErrOutputRequired.Error(), Cause: ErrOutputRequired}
+	}
+	return nil
+}
+
+func samePath(left, right string) bool {
+	if left == "-" || right == "-" {
+		return left == right
+	}
+	return filepath.Clean(left) == filepath.Clean(right)
 }
 
 // InputConfig identifies the source schema document.
