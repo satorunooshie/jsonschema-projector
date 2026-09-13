@@ -269,6 +269,40 @@ func TestGenerateGoEmitsUnionDecodersAndPrimitiveWrappers(t *testing.T) {
 	assertGeneratedPackageCompiles(t, source)
 }
 
+func TestGenerateGoConvertsPrimitiveTypeArrayToUnion(t *testing.T) {
+	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-", RootType: "Value"}, map[string]any{
+		"type": []any{"string", "number", "boolean", "null"},
+	})
+	for _, want := range []string{
+		"type Value interface",
+		"type StringValue string",
+		"type NumberValue float64",
+		"type BooleanValue bool",
+		"type NullValue struct{}",
+		"case 'n':",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("generated primitive union does not contain %q:\n%s", want, source)
+		}
+	}
+}
+
+func TestGenerateGoPromotesInlineObjectUnionVariant(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"value": map[string]any{"anyOf": []any{
+				map[string]any{"type": "string"},
+				map[string]any{"type": "object", "properties": map[string]any{"key": map[string]any{"type": "string"}}},
+			}},
+		},
+	}
+	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-"}, schema)
+	if !strings.Contains(source, "type ParentValueObject struct") && !strings.Contains(source, "type RootValueObject struct") {
+		t.Fatalf("inline object union variant was not promoted to a named definition:\n%s", source)
+	}
+}
+
 func TestGenerateGoEmitsDiscriminatorDispatch(t *testing.T) {
 	schema := map[string]any{
 		"oneOf": []any{map[string]any{"$ref": "#/$defs/Button"}, map[string]any{"$ref": "#/$defs/Text"}},
