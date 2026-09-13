@@ -49,6 +49,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 func runProject(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("project", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { printCommandUsage(fs, stderr, "project", "project and write the projected JSON Schema") }
 	configPath := fs.String("c", "projector.yaml", "path to projector YAML config")
 	outputOverride := fs.String("output", "", "override output.path")
 	format := fs.String("format", "text", "diagnostic output format: text or json")
@@ -65,6 +66,10 @@ func runProject(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return code
 	}
 	applyOutputOverride(&cfg, *outputOverride)
+	if err := cfg.ValidateForWrite(); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 
 	var result *projector.Result
 	var err error
@@ -95,6 +100,7 @@ func runProject(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 func runCheck(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { printCommandUsage(fs, stderr, "check", "project and validate without writing files") }
 	configPath := fs.String("c", "projector.yaml", "path to projector YAML config")
 	format := fs.String("format", "text", "diagnostic output format: text or json")
 	if err := fs.Parse(args); err != nil {
@@ -133,6 +139,7 @@ func runCheck(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 func runGenerate(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("generate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { printCommandUsage(fs, stderr, "generate", "project, validate, and generate Go DTOs") }
 	configPath := fs.String("c", "projector.yaml", "path to projector YAML config")
 	outputOverride := fs.String("output", "", "override output.path")
 	format := fs.String("format", "text", "diagnostic output format: text or json")
@@ -266,7 +273,21 @@ func printUsage(w io.Writer) {
   jsonschema-projector project -c projector.yaml
   jsonschema-projector check -c projector.yaml
   jsonschema-projector generate -c projector.yaml
-  jsonschema-projector version`)
+  jsonschema-projector version
+
+commands:
+  project   project and write the projected JSON Schema
+  check     project and validate without writing files
+  generate  project, validate, and generate Go DTOs
+  version   print the CLI version
+
+use "jsonschema-projector <command> -h" for command-specific options`)
+}
+
+func printCommandUsage(fs *flag.FlagSet, w io.Writer, command, description string) {
+	fmt.Fprintf(w, "usage: jsonschema-projector %s [options]\n\n%s\n\noptions:\n", command, description)
+	fs.SetOutput(w)
+	fs.PrintDefaults()
 }
 
 func versionString() string {

@@ -75,6 +75,20 @@ jsonschema-projector version
 - `generate` runs projection, validation, schema output, and Go DTO generation in order.
 - `version` prints the CLI version.
 
+Use `jsonschema-projector <command> -h` to see command-specific options. Input
+and output paths may be `-` when the command supports stdin/stdout. For
+example:
+
+```sh
+cat schema.json | jsonschema-projector project -c projector-stdin.yaml --output -
+jsonschema-projector project -c projector.yaml --output projected.schema.json
+```
+
+In the first example, `projector-stdin.yaml` sets `input.path: "-"`.
+
+CLI exit codes are `0` for success, `1` for input, configuration, validation,
+or generation failures, and `2` for invalid command-line usage.
+
 ## Configuration
 
 ```yaml
@@ -126,6 +140,21 @@ For union generation details, see
 
 Generated DTOs are typed representations, not replacements for runtime
 validation. Use `jsonschema/v6` when you need JSON Schema semantics at runtime.
+
+The native generator currently supports this subset:
+
+| Schema shape | Support |
+| --- | --- |
+| Objects and properties | Supported |
+| Arrays and maps | Supported |
+| Primitives and enums | Supported |
+| Direct local `$ref` values | Supported |
+| `oneOf` / `anyOf` unions | Supported, with documented dispatch rules |
+| `allOf` | Limited; depends on the composed shape |
+| `patternProperties` and conditional schemas | Unsupported |
+
+Unsupported generator shapes produce diagnostics. They remain available for
+projection and standard JSON Schema validation.
 
 ## Go API
 

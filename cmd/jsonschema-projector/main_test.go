@@ -31,6 +31,17 @@ func TestVersionCommand(t *testing.T) {
 	}
 }
 
+func TestCommandHelpListsOptions(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"generate", "-h"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("expected flag help exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "usage: jsonschema-projector generate [options]") || !strings.Contains(stderr.String(), "-output") || !strings.Contains(stderr.String(), "-format") {
+		t.Fatalf("command help is missing expected content:\n%s", stderr.String())
+	}
+}
+
 func TestCheckFormatJSONWritesDiagnosticsToStdoutAndDoesNotWriteOutput(t *testing.T) {
 	dir := t.TempDir()
 	catalogPath := filepath.Join(dir, "catalog.schema.json")
