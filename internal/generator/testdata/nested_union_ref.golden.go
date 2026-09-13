@@ -71,6 +71,7 @@ func (v *Container) UnmarshalJSON(data []byte) error {
 		}
 		v.Value = decoded
 	}
+
 	return nil
 }
 

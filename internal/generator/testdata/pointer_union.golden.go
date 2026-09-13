@@ -63,6 +63,7 @@ func (v *Root) UnmarshalJSON(data []byte) error {
 		}
 		v.Value = decoded
 	}
+
 	return nil
 }
 

@@ -69,6 +69,7 @@ func (v *RecursiveObject) UnmarshalJSON(data []byte) error {
 		}
 		v.Next = decoded
 	}
+
 	return nil
 }
 

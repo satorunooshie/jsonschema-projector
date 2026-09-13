@@ -425,7 +425,7 @@ func (g *nativeGenerator) addStructDecl(name string, node *schemaNode) {
 		}
 	}
 
-	methods := []string{}
+	var unionFields []structUnmarshalFieldData
 	for _, propertyName := range sortedStructPropertyNames(node) {
 		prop := node.Properties[propertyName]
 		if prop == nil || !g.containsUnion(prop) {
@@ -438,11 +438,13 @@ func (g *nativeGenerator) addStructDecl(name string, node *schemaNode) {
 		if mode == "slice" {
 			decoder += "Slice"
 		}
-		fragment := "struct-unmarshal"
-		if mode == "map" {
-			fragment = "struct-unmarshal-map"
-		}
-		methods = append(methods, g.renderEmbeddedFragment(fragment, structUnmarshalTemplateData{Name: name, Field: fieldName, Tag: mustJSONTag(propertyName), Decoder: decoder, UnionType: unionName, Mode: mode}))
+		unionFields = append(unionFields, structUnmarshalFieldData{
+			Field: fieldName, Tag: mustJSONTag(propertyName), Decoder: decoder, UnionType: unionName, Mode: mode,
+		})
+	}
+	methods := []string{}
+	if len(unionFields) > 0 {
+		methods = append(methods, g.renderEmbeddedFragment("struct-unmarshal", structUnmarshalTemplateData{Name: name, Fields: unionFields}))
 	}
 	description := ""
 	if node.Description != "" {
