@@ -912,6 +912,25 @@ func assertGeneratedPackageCompiles(t *testing.T, source string) {
 	}
 }
 
+func assertGeneratedPackageTests(t *testing.T, source, testSource string) {
+	t.Helper()
+	dir := t.TempDir()
+	for path, data := range map[string][]byte{
+		"go.mod":        []byte("module example.com/generated\n\ngo 1.22\n"),
+		"types.gen.go":  []byte(source),
+		"types_test.go": []byte(testSource),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, path), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = dir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generated package tests failed: %v\n%s\nsource:\n%s", err, string(output), source)
+	}
+}
+
 func assertGeneratedPackageTestsGolden(t *testing.T, source, golden string) {
 	t.Helper()
 	testSource := readFile(t, filepath.Join("testdata", golden))
@@ -1031,6 +1050,250 @@ func TestUnionGenerationMatrix(t *testing.T) {
 				}
 			}
 			assertGeneratedPackageCompiles(t, string(source))
+		})
+	}
+}
+
+func TestNestedUnionReferenceIsFlattenedAndReusable(t *testing.T) {
+	schema := map[string]any{
+		"$defs": map[string]any{
+			"DataBinding": map[string]any{"oneOf": []any{
+				map[string]any{"type": "string"},
+				map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "required": []any{"path"}},
+			}},
+			"Container": map[string]any{"type": "object", "properties": map[string]any{
+				"value": map[string]any{"anyOf": []any{map[string]any{"type": "string"}, map[string]any{"$ref": "#/$defs/DataBinding"}}},
+			}},
+		},
+	}
+	source, diagnostics, err := GenerateGoSource(context.Background(), projector.GoGenerateConfig{Package: "component", Output: "-"}, schema)
+	if err != nil || diagnostics.HasErrors() {
+		t.Fatalf("nested union generation failed: %v %v", err, diagnostics)
+	}
+	text := string(source)
+	if strings.Count(text, "type StringValue string") != 1 {
+		t.Fatalf("string wrapper was duplicated:\n%s", text)
+	}
+	if !strings.Contains(text, "type DataBinding interface") || !strings.Contains(text, "type ContainerValue interface") {
+		t.Fatalf("expected reusable nested unions:\n%s", text)
+	}
+	assertGeneratedPackageCompiles(t, text)
+}
+
+func TestSameTokenUnionUsesConstraintsAtDecodeTime(t *testing.T) {
+	schema := map[string]any{"anyOf": []any{
+		map[string]any{"type": "string", "pattern": "^[a-z]+$"},
+		map[string]any{"type": "string", "format": "email"},
+	}}
+	source, diagnostics, err := GenerateGoSource(context.Background(), projector.GoGenerateConfig{Package: "component", Output: "-", RootType: "Value"}, schema)
+	if err != nil || diagnostics.HasErrors() {
+		t.Fatalf("constrained union generation failed: %v %v", err, diagnostics)
+	}
+	assertGoldenFile(t, string(source), "constrained_union.golden.go")
+	assertGeneratedPackageCompiles(t, string(source))
+}
+
+func TestRecursiveAnyOfDecodeAndGolden(t *testing.T) {
+	schema := recursiveAnyOfSchema()
+	cfg := projector.GoGenerateConfig{Package: "component", Output: "-"}
+	first := generateGoSource(t, cfg, schema)
+	second := generateGoSource(t, cfg, schema)
+	if first != second {
+		t.Fatal("recursive anyOf generation is not deterministic")
+	}
+	assertGoldenFile(t, first, "recursive_anyof.golden.go")
+	assertGeneratedPackageTests(t, first, `package component
+
+import (
+	"encoding/json"
+	"errors"
+	"testing"
+)
+
+func TestRecursiveAnyOfRuntime(t *testing.T) {
+	cases := []struct {
+		name string
+		data []byte
+		kind string
+	}{
+		{name: "leaf", data: []byte("\"leaf\""), kind: "string"},
+		{name: "recursive object", data: []byte("{\"next\":\"leaf\"}"), kind: "object"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := UnmarshalRecursive(tc.data)
+			if err != nil { t.Fatal(err) }
+			switch tc.kind {
+			case "string":
+				if _, ok := value.(StringValue); !ok { t.Fatalf("got %T, want StringValue", value) }
+			case "object":
+				object, ok := value.(RecursiveObject)
+				if !ok || object.Next == nil { t.Fatalf("got %#v, want recursive object", value) }
+				if _, ok := object.Next.(StringValue); !ok { t.Fatalf("got %T, want StringValue", object.Next) }
+			}
+		})
+	}
+
+	if _, err := UnmarshalRecursive([]byte("{\"next\":{}}")); !errors.Is(err, ErrUnknownVariant) {
+		t.Fatalf("got %v, want unknown variant", err)
+	}
+	var roundTrip RecursiveObject
+	if err := json.Unmarshal([]byte("{\"next\":\"leaf\"}"), &roundTrip); err != nil { t.Fatal(err) }
+}
+
+`)
+}
+
+func TestRecursiveAnyOfSelfReferenceIsAFixedPoint(t *testing.T) {
+	schema := map[string]any{
+		"$defs": map[string]any{
+			"Value": map[string]any{"anyOf": []any{
+				map[string]any{"type": "string"},
+				map[string]any{"$ref": "#/$defs/Value"},
+			}},
+		},
+		"$ref": "#/$defs/Value",
+	}
+	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-"}, schema)
+	if !strings.Contains(source, "type Value string") {
+		t.Fatalf("recursive anyOf self-reference was not normalized to its fixed point:\n%s", source)
+	}
+	if strings.Contains(source, "func (Value) isValue()") {
+		t.Fatalf("recursive union generated an invalid self-interface variant:\n%s", source)
+	}
+}
+
+func recursiveAnyOfSchema() map[string]any {
+	return map[string]any{
+		"$defs": map[string]any{
+			"Recursive": map[string]any{"anyOf": []any{
+				map[string]any{"type": "string"},
+				map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"next": map[string]any{"$ref": "#/$defs/Recursive"}},
+					"required":   []any{"next"},
+				},
+			}},
+		},
+		"$ref": "#/$defs/Recursive",
+	}
+}
+
+func TestUnionContainerGenerationMatrix(t *testing.T) {
+	union := func() map[string]any {
+		return map[string]any{"anyOf": []any{
+			map[string]any{"type": "string"},
+			map[string]any{"type": "boolean"},
+		}}
+	}
+	tests := []struct {
+		name   string
+		schema map[string]any
+		golden string
+	}{
+		{
+			name: "pointer field",
+			schema: schemaWithDef("Root", map[string]any{"type": "object", "properties": map[string]any{
+				"value": union(),
+			}}),
+			golden: "pointer_union.golden.go",
+		},
+		{
+			name: "slice element",
+			schema: schemaWithDef("Root", map[string]any{"type": "object", "properties": map[string]any{
+				"values": map[string]any{"type": "array", "items": union()},
+			}}),
+			golden: "slice_union.golden.go",
+		},
+		{
+			name: "map value",
+			schema: schemaWithDef("Root", map[string]any{"type": "object", "properties": map[string]any{
+				"values": map[string]any{"type": "object", "additionalProperties": union()},
+			}}),
+			golden: "map_union.golden.go",
+		},
+		{
+			name: "union reference inside union",
+			schema: map[string]any{
+				"$defs": map[string]any{
+					"Choice": map[string]any{"oneOf": []any{
+						map[string]any{"type": "string"},
+						map[string]any{"type": "boolean"},
+					}},
+					"Container": map[string]any{"type": "object", "properties": map[string]any{
+						"value": map[string]any{"anyOf": []any{
+							map[string]any{"$ref": "#/$defs/Choice"},
+							map[string]any{"type": "number"},
+						}},
+					}},
+				},
+			},
+			golden: "nested_union_ref.golden.go",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-"}, tt.schema)
+			assertGoldenFile(t, source, tt.golden)
+			assertGeneratedPackageCompiles(t, source)
+		})
+	}
+}
+
+func TestGeneratedUnionContainersDecode(t *testing.T) {
+	union := func() map[string]any {
+		return map[string]any{"anyOf": []any{
+			map[string]any{"type": "string"},
+			map[string]any{"type": "boolean"},
+		}}
+	}
+	tests := []struct {
+		name       string
+		schema     map[string]any
+		assertions string
+	}{
+		{
+			name: "field",
+			schema: schemaWithDef("Root", map[string]any{"type": "object", "properties": map[string]any{
+				"value": union(),
+			}}),
+			assertions: `
+	var value Root
+	if err := json.Unmarshal([]byte("{\"value\":\"x\"}"), &value); err != nil { t.Fatal(err) }
+	if _, ok := value.Value.(StringValue); !ok { t.Fatalf("got %T, want StringValue", value.Value) }
+`,
+		},
+		{
+			name: "slice",
+			schema: schemaWithDef("Root", map[string]any{"type": "object", "properties": map[string]any{
+				"values": map[string]any{"type": "array", "items": union()},
+			}}),
+			assertions: `
+	var value Root
+	if err := json.Unmarshal([]byte("{\"values\":[\"x\",true]}"), &value); err != nil { t.Fatal(err) }
+	if len(value.Values) != 2 { t.Fatalf("got %d values, want 2", len(value.Values)) }
+	if _, ok := value.Values[0].(StringValue); !ok { t.Fatalf("got %T, want StringValue", value.Values[0]) }
+	if _, ok := value.Values[1].(BooleanValue); !ok { t.Fatalf("got %T, want BooleanValue", value.Values[1]) }
+`,
+		},
+		{
+			name: "map",
+			schema: schemaWithDef("Root", map[string]any{"type": "object", "properties": map[string]any{
+				"values": map[string]any{"type": "object", "additionalProperties": union()},
+			}}),
+			assertions: `
+	var value Root
+	if err := json.Unmarshal([]byte("{\"values\":{\"a\":\"x\",\"b\":true}}"), &value); err != nil { t.Fatal(err) }
+	if _, ok := value.Values["a"].(StringValue); !ok { t.Fatalf("got %T, want StringValue", value.Values["a"]) }
+	if _, ok := value.Values["b"].(BooleanValue); !ok { t.Fatalf("got %T, want BooleanValue", value.Values["b"]) }
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-"}, tt.schema)
+			testSource := "package component\n\nimport (\n\t\"encoding/json\"\n\t\"testing\"\n)\n\nfunc TestGeneratedContainerRuntime(t *testing.T) {" + tt.assertions + "}\n"
+			assertGeneratedPackageTests(t, source, testSource)
 		})
 	}
 }
