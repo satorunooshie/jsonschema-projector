@@ -25,10 +25,15 @@ type unionDecoderTokenBranch struct {
 	Body  string
 }
 
+type unionDecoderTokenCandidate struct {
+	Cases, Type, Condition string
+}
+
 type unionDecoderData struct {
 	Name, Discriminator string
 	DiscriminatorCases  []unionDecoderBranch
 	TokenCases          []unionDecoderTokenBranch
+	TokenCandidates     []unionDecoderTokenCandidate
 	ObjectBranches      []unionDecoderBranch
 	ValidationCases     []unionDecoderBranch
 	AmbiguousFirst      bool
