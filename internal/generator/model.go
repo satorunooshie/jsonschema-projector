@@ -90,6 +90,10 @@ type aliasTemplateData struct {
 	Name, Description, Underlying string
 }
 
+type arrayUnmarshalTemplateData struct {
+	Name, Decoder string
+}
+
 // nativeGenerator owns the generation state shared by schema analysis and
 // rendering. The representation types above are independent of template data
 // types in union_model.go.

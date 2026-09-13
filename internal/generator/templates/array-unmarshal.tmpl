@@ -1,0 +1,16 @@
+func (v *{{.Name}}) UnmarshalJSON(data []byte) error {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	decoded := make({{.Name}}, len(raw))
+	for i, item := range raw {
+		value, err := {{.Decoder}}(item)
+		if err != nil {
+			return fmt.Errorf("{{.Name}}[%d]: %w", i, err)
+		}
+		decoded[i] = value
+	}
+	*v = decoded
+	return nil
+}

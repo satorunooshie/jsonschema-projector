@@ -62,7 +62,10 @@ func (g *nativeGenerator) addUnionDecl(name string, node *schemaNode, root bool)
 	if !ok {
 		return
 	}
-	if field, _ := g.unionDiscriminator(variants); field == "" {
+	if field, _, duplicate := g.unionDiscriminator(variants); duplicate {
+		g.addError(projector.CodeUnsupportedSchema, "union discriminator values must be unique", node.Pointer, "use distinct const values for each variant")
+		return
+	} else if field == "" {
 		dispatchable := false
 		for _, variant := range variants {
 			if primitiveSchema(variant.Node) != "" || len(variant.Node.Required) > 0 || len(variant.Node.Properties) > 0 {
@@ -102,7 +105,7 @@ func (g *nativeGenerator) addUnionDecl(name string, node *schemaNode, root bool)
 	if g.cfg.Unions.Dispatch == "schema-validation" {
 		g.needsSync = true
 	}
-	if field, _ := g.unionDiscriminator(variants); field != "" {
+	if field, _, _ := g.unionDiscriminator(variants); field != "" {
 		g.needsSync = true
 	}
 
@@ -124,7 +127,7 @@ func (g *nativeGenerator) unionDecoder(union unionInfo) string {
 			Body:  g.renderEmbeddedFragment("union-case", variant),
 		})
 	}
-	if field, values := g.unionDiscriminator(union.Variants); field != "" {
+	if field, values, _ := g.unionDiscriminator(union.Variants); field != "" {
 		d.Discriminator = field
 		d.Registration = true
 		g.needsSync = true
@@ -286,39 +289,57 @@ func jsonMatchCondition(variant unionVariant) string {
 	return strings.Join(parts, " && ")
 }
 
-func (g *nativeGenerator) unionDiscriminator(variants []unionVariant) (string, map[string]unionVariant) {
-	values := map[string]unionVariant{}
-	field := ""
-	for _, v := range variants {
-		node := g.resolvedNode(v.Node, map[*schemaNode]bool{})
+func (g *nativeGenerator) unionDiscriminator(variants []unionVariant) (string, map[string]unionVariant, bool) {
+	if len(variants) == 0 {
+		return "", nil, false
+	}
+
+	nodes := make([]*schemaNode, len(variants))
+	fields := map[string]struct{}{}
+	for i, variant := range variants {
+		node := g.resolvedNode(variant.Node, map[*schemaNode]bool{})
 		if node == nil {
-			return "", nil
+			return "", nil, false
 		}
-		for name, prop := range node.Properties {
-			prop = g.resolvedNode(prop, map[*schemaNode]bool{})
-			if prop == nil {
-				continue
-			}
-			if prop.HasConst {
-				if value, ok := prop.Const.(string); ok {
-					if field == "" {
-						field = name
-					}
-					if field != name || !node.Required[name] {
-						return "", nil
-					}
-					if _, exists := values[value]; exists {
-						return "", nil
-					}
-					values[value] = v
-				}
-			}
+		nodes[i] = node
+		for field := range node.Properties {
+			fields[field] = struct{}{}
 		}
 	}
-	if len(values) != len(variants) {
-		return "", nil
+
+	duplicate := false
+	for _, field := range sortedStringKeys(fields) {
+		values := make(map[string]unionVariant, len(variants))
+		candidate := true
+		for i, node := range nodes {
+			if !node.Required[field] {
+				candidate = false
+				break
+			}
+			prop := g.resolvedNode(node.Properties[field], map[*schemaNode]bool{})
+			value, ok := "", false
+			if prop != nil && prop.HasConst {
+				value, ok = prop.Const.(string)
+			}
+			if !ok {
+				candidate = false
+				break
+			}
+			if _, exists := values[value]; exists {
+				duplicate = true
+				candidate = false
+				break
+			}
+			values[value] = variants[i]
+		}
+		if candidate && len(values) == len(variants) {
+			return field, values, false
+		}
 	}
-	return field, values
+	if duplicate {
+		return "", nil, true
+	}
+	return "", nil, false
 }
 
 func (g *nativeGenerator) resolvedNode(node *schemaNode, seen map[*schemaNode]bool) *schemaNode {
@@ -504,5 +525,18 @@ func (g *nativeGenerator) addAliasDecl(name, underlying string, node *schemaNode
 		}
 		body += g.renderEmbeddedFragment("constants", constantLines)
 	}
+	if g.isNamedUnionArray(node) {
+		unionName, _ := unionFieldName(g, node, name)
+		g.needsJSON = true
+		g.needsFmt = true
+		body += g.renderEmbeddedFragment("array-unmarshal", arrayUnmarshalTemplateData{
+			Name: name, Decoder: "Unmarshal" + unionName,
+		})
+	}
 	g.addDecl(name, node.Pointer, body)
+}
+
+func (g *nativeGenerator) isNamedUnionArray(node *schemaNode) bool {
+	return node != nil && len(node.OneOf) == 0 && len(node.AnyOf) == 0 &&
+		len(node.TupleItems) == 0 && g.isUnionNode(node.Items)
 }
