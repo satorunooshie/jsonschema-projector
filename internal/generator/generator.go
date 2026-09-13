@@ -116,14 +116,113 @@ func newNativeGenerator(cfg projector.GoGenerateConfig, schema map[string]any) *
 		typeNames:          map[string]string{},
 		usedTypeNames:      map[string]string{},
 		generatedByPointer: map[string]string{},
+		unionVariantTypes:  map[string]string{},
+		regexpNames:        map[string]string{},
 		markerMethods:      map[string]map[string]struct{}{},
 	}
 	gen.root = gen.parseSchema(schema, "#")
 	gen.parseDefinitions()
 	gen.normalizeInlineUnions()
+	gen.normalizeNestedUnions()
 	gen.normalizeAllOf()
 	gen.reserveDefinitionTypeNames()
 	return gen
+}
+
+// normalizeNestedUnions expands union members that point at another union.
+// The expansion is graph based: references to concrete definitions are kept as
+// references, while only union-to-union edges are flattened. This preserves
+// recursive object references and gives every use of a named definition the
+// same Go type.
+func (g *nativeGenerator) normalizeNestedUnions() {
+	for _, name := range g.defOrder {
+		g.flattenUnionGraph(g.defs[name], map[*schemaNode]bool{})
+	}
+	g.flattenUnionGraph(g.root, map[*schemaNode]bool{})
+	g.defOrder = sortedStringKeys(g.defs)
+}
+
+func (g *nativeGenerator) flattenUnionGraph(node *schemaNode, active map[*schemaNode]bool) {
+	if node == nil || active[node] {
+		return
+	}
+	active[node] = true
+	defer delete(active, node)
+	for _, child := range []*schemaNode{node.Items, node.AdditionalProperties} {
+		g.flattenUnionGraph(child, active)
+	}
+	for _, child := range node.Properties {
+		g.flattenUnionGraph(child, active)
+	}
+	for _, child := range node.TupleItems {
+		g.flattenUnionGraph(child, active)
+	}
+	for _, child := range node.AllOf {
+		g.flattenUnionGraph(child, active)
+	}
+	if len(node.OneOf) == 0 && len(node.AnyOf) == 0 {
+		return
+	}
+	items := node.OneOf
+	if len(items) == 0 {
+		items = node.AnyOf
+	}
+	out := make([]*schemaNode, 0, len(items))
+	seen := map[string]bool{}
+	var appendMember func(*schemaNode, map[*schemaNode]bool)
+	appendMember = func(member *schemaNode, path map[*schemaNode]bool) {
+		if member == nil {
+			return
+		}
+		resolved := member
+		if member.Ref != "" {
+			name, ok := localDefinitionRef(member.Ref)
+			if ok {
+				resolved = g.defs[name]
+			}
+		}
+		if resolved != nil && (len(resolved.OneOf) > 0 || len(resolved.AnyOf) > 0) && path[resolved] {
+			// A recursive edge back into the active union is the fixed-point
+			// self branch; retaining it would make an interface embed itself
+			// as a concrete variant. Concrete branches already collected in
+			// this path represent the recursive union safely.
+			if len(node.OneOf) > 0 {
+				g.addError(projector.CodeUnsupportedSchema, "recursive oneOf cannot be flattened without changing schema semantics", member.Pointer, "use recursion through an object or use anyOf for a recursive fixed-point union")
+			}
+			return
+		}
+		if resolved != nil && (len(resolved.OneOf) > 0 || len(resolved.AnyOf) > 0) && !path[resolved] {
+			path[resolved] = true
+			members := resolved.OneOf
+			if len(members) == 0 {
+				members = resolved.AnyOf
+			}
+			for _, nested := range members {
+				appendMember(nested, path)
+			}
+			delete(path, resolved)
+			return
+		}
+		key := member.Pointer
+		if member.Ref != "" {
+			if name, ok := localDefinitionRef(member.Ref); ok {
+				key = "$defs/" + name
+			}
+		}
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, member)
+		}
+	}
+	path := map[*schemaNode]bool{node: true}
+	for _, item := range items {
+		appendMember(item, path)
+	}
+	if len(node.OneOf) > 0 {
+		node.OneOf = out
+	} else {
+		node.AnyOf = out
+	}
 }
 
 // normalizeInlineUnions gives every inline union a stable definition name and
@@ -222,8 +321,13 @@ func (g *nativeGenerator) Source() []byte {
 	for _, name := range g.defOrder {
 		g.generateDefinition(name, g.defs[name])
 	}
+	decoderSources := make([]string, 0, len(g.unions))
+	for _, union := range g.unions {
+		decoderSources = append(decoderSources, g.unionDecoder(union))
+	}
 
 	data := sourceTemplateData{Package: g.cfg.Package, Decls: g.decls}
+	data.RegexpDecls = append(data.RegexpDecls, g.regexpDecls...)
 	if g.needsJSON || g.needsErrors {
 		data.NeedsErrors = g.needsErrors
 		data.NeedsJSON = g.needsJSON
@@ -239,6 +343,9 @@ func (g *nativeGenerator) Source() []byte {
 		if g.needsSync {
 			data.Imports = append(data.Imports, "sync")
 		}
+		if g.needsRegexp {
+			data.Imports = append(data.Imports, "regexp")
+		}
 		data.Preamble = g.renderEmbeddedFragment("preamble", data)
 	}
 	for _, receiver := range sortedMarkerReceivers(g.markerMethods) {
@@ -247,9 +354,7 @@ func (g *nativeGenerator) Source() []byte {
 			data.Markers = append(data.Markers, fmt.Sprintf("func (%s) %s() {}", receiver, method))
 		}
 	}
-	for _, union := range g.unions {
-		data.Decoders = append(data.Decoders, g.unionDecoder(union))
-	}
+	data.Decoders = append(data.Decoders, decoderSources...)
 	sourceText, err := embeddedTemplate("source")
 	if err != nil {
 		g.addError(projector.CodeGenerationFailed, err.Error(), "generate.go", "")
