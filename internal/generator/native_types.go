@@ -262,7 +262,7 @@ func (g *nativeGenerator) refGoType(ref, ptr string) goType {
 	}
 
 	typeName := g.typeNames[defName]
-	if len(def.OneOf) > 0 {
+	if len(def.OneOf) > 0 || len(def.AnyOf) > 0 {
 		return goType{Expr: typeName, Nilable: true}
 	}
 	if g.isStructSchema(def) {
@@ -282,6 +282,9 @@ func (g *nativeGenerator) inlineUnionType(node *schemaNode, contextName string) 
 }
 
 func (g *nativeGenerator) unionVariants(unionName string, node *schemaNode) ([]unionVariant, bool) {
+	if g.unionVariantTypes == nil {
+		g.unionVariantTypes = make(map[string]string)
+	}
 	items, keyword := node.OneOf, "oneOf"
 	if len(items) == 0 {
 		items, keyword = node.AnyOf, "anyOf"
@@ -293,7 +296,23 @@ func (g *nativeGenerator) unionVariants(unionName string, node *schemaNode) ([]u
 	variants := make([]unionVariant, 0, len(items))
 	seen := map[string]struct{}{}
 	for i, item := range items {
+		duplicate := false
+		for _, existing := range variants {
+			if schemaNodesEquivalent(existing.Node, item, map[[2]*schemaNode]bool{}) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
 		if item.Ref == "" {
+			if key := primitiveVariantKey(item); key != "" {
+				if existing, ok := g.unionVariantTypes[key]; ok {
+					variants = append(variants, unionVariant{Name: existing, Type: existing, Node: item})
+					continue
+				}
+			}
 			base := unionName + "Variant" + strconv.Itoa(i+1)
 			switch primitiveSchema(item) {
 			case "string":
@@ -312,6 +331,9 @@ func (g *nativeGenerator) unionVariants(unionName string, node *schemaNode) ([]u
 				continue
 			}
 			g.addAliasDecl(variantName, underlying.Expr, item)
+			if key := primitiveVariantKey(item); key != "" {
+				g.unionVariantTypes[key] = variantName
+			}
 			variants = append(variants, unionVariant{Name: variantName, Type: variantName, Node: item})
 			continue
 		}
@@ -339,13 +361,54 @@ func (g *nativeGenerator) unionVariants(unionName string, node *schemaNode) ([]u
 				continue
 			}
 			if previous, exists := seenTokens[token]; exists {
-				g.addError(projector.CodeUnsupportedSchema, fmt.Sprintf("union variants %s and %s have overlapping JSON token matches", previous, variant.Name), node.Pointer, "set generate.go.unions.ambiguous to first or make the schemas disjoint")
-				break
+				// Same-token variants are valid when a schema constraint can
+				// distinguish them. The decoder will validate those constraints.
+				var prior unionVariant
+				for _, candidate := range variants {
+					if candidate.Name == previous {
+						prior = candidate
+						break
+					}
+				}
+				if !hasRoutingConstraint(prior.Node) && !hasRoutingConstraint(variant.Node) || schemaNodesEquivalent(prior.Node, variant.Node, map[[2]*schemaNode]bool{}) {
+					g.addError(projector.CodeUnsupportedSchema, fmt.Sprintf("union variants %s and %s have overlapping JSON token matches", previous, variant.Name), node.Pointer, "set generate.go.unions.ambiguous to first or make the schemas disjoint")
+					break
+				}
 			}
 			seenTokens[token] = variant.Name
 		}
 	}
 	return variants, len(variants) > 0 && !g.diagnostics.HasErrors()
+}
+
+func hasRoutingConstraint(node *schemaNode) bool {
+	return node != nil && (node.Format != "" || node.Pattern != "" || len(node.Enum) > 0 || node.HasConst || node.Minimum != nil || node.Maximum != nil || node.ExclusiveMinimum != nil || node.ExclusiveMaximum != nil)
+}
+
+func primitiveVariantKey(node *schemaNode) string {
+	typ := primitiveSchema(node)
+	if typ == "" {
+		return ""
+	}
+	var key strings.Builder
+	key.WriteString(typ)
+	key.WriteByte('|')
+	key.WriteString(node.Format)
+	key.WriteByte('|')
+	key.WriteString(node.Pattern)
+	for _, value := range []*float64{node.Minimum, node.Maximum, node.ExclusiveMinimum, node.ExclusiveMaximum} {
+		key.WriteByte('|')
+		if value == nil {
+			key.WriteString("<nil>")
+			continue
+		}
+		key.WriteString(strconv.FormatFloat(*value, 'g', -1, 64))
+	}
+	key.WriteByte('|')
+	if encoded, err := json.Marshal(node.Enum); err == nil {
+		key.Write(encoded)
+	}
+	return key.String()
 }
 
 func (g *nativeGenerator) isStructSchema(node *schemaNode) bool {
