@@ -1,0 +1,355 @@
+package generator
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/satorunooshie/jsonschema-projector/projector"
+)
+
+func (g *nativeGenerator) generateRootUnion() {
+	if len(g.root.OneOf) == 0 && len(g.root.AnyOf) == 0 {
+		return
+	}
+
+	name := g.rootUnionTypeName()
+	g.addUnionDecl(name, g.root, true)
+}
+
+func (g *nativeGenerator) rootUnionTypeName() string {
+	if g.cfg.RootType != "" {
+		return g.reserveTypeName(g.exportedIdentifier(g.cfg.RootType), "#", true)
+	}
+
+	for _, candidate := range []string{g.root.Title, "Root"} {
+		if candidate == "" {
+			continue
+		}
+		name := g.exportedIdentifier(candidate)
+		if _, exists := g.usedTypeNames[name]; !exists {
+			return g.reserveTypeName(name, "#", false)
+		}
+	}
+
+	return g.reserveTypeName("Root", "#", false)
+}
+
+func (g *nativeGenerator) generateDefinition(name string, node *schemaNode) {
+	typeName := g.typeNames[name]
+	if g.alreadyGenerated(node.Pointer) {
+		return
+	}
+
+	switch {
+	case len(node.OneOf) > 0 || len(node.AnyOf) > 0:
+		g.addUnionDecl(typeName, node, false)
+	case g.isStructSchema(node):
+		g.addStructDecl(typeName, node)
+	default:
+		underlying := g.schemaGoType(node, typeName)
+		g.addAliasDecl(typeName, underlying.Expr, node)
+	}
+}
+
+func (g *nativeGenerator) addUnionDecl(name string, node *schemaNode, root bool) {
+	if g.alreadyGenerated(node.Pointer) {
+		return
+	}
+
+	variants, ok := g.unionVariants(name, node)
+	if !ok {
+		return
+	}
+	if field, _ := unionDiscriminator(variants); field == "" {
+		dispatchable := false
+		for _, variant := range variants {
+			if primitiveSchema(variant.Node) != "" || len(variant.Node.Required) > 0 || len(variant.Node.Properties) > 0 {
+				dispatchable = true
+				break
+			}
+		}
+		if !dispatchable {
+			g.addError(projector.CodeUnsupportedSchema, "union has no discriminator, token, required property, or structural match rule", node.Pointer, "add a discriminator const or make object variants structurally exclusive")
+		}
+	}
+
+	methodName := markerMethodName(name)
+	for _, variant := range variants {
+		member := variant.Node
+		if len(member.OneOf) > 0 {
+			g.addError(
+				projector.CodeUnsupportedSchema,
+				"oneOf members must be concrete $defs entries, not another oneOf union",
+				member.Pointer,
+				"",
+			)
+			continue
+		}
+		g.addMarker(variant.Type, methodName)
+	}
+
+	description := ""
+	if node.Description != "" {
+		description = docComment(name, node.Description)
+	}
+	body := g.renderEmbeddedFragment("union", unionTemplateData{Name: name, Description: description, Method: methodName})
+	g.addDecl(name, node.Pointer, body)
+	g.unions = append(g.unions, unionInfo{Name: name, Node: node, Variants: variants})
+	g.needsJSON, g.needsErrors = true, true
+	g.needsFmt = true
+	if g.cfg.Unions.Dispatch == "schema-validation" {
+		g.needsSync = true
+	}
+	if field, _ := unionDiscriminator(variants); field != "" {
+		g.needsSync = true
+	}
+
+	_ = root
+}
+
+func (g *nativeGenerator) unionDecoder(union unionInfo) string {
+	d := unionDecoderData{
+		Name:           union.Name,
+		AmbiguousFirst: g.cfg.Unions.Ambiguous == "first",
+		SchemaDispatch: g.cfg.Unions.Dispatch == "schema-validation",
+	}
+	if d.SchemaDispatch {
+		g.needsSync = true
+	}
+	for _, variant := range union.Variants {
+		d.ValidationCases = append(d.ValidationCases, unionDecoderBranch{
+			Match: variant.Name,
+			Body:  g.renderEmbeddedFragment("union-case", variant),
+		})
+	}
+	if field, values := unionDiscriminator(union.Variants); field != "" {
+		d.Discriminator = field
+		d.Registration = true
+		g.needsSync = true
+		for _, value := range sortedStringKeys(values) {
+			d.DiscriminatorCases = append(d.DiscriminatorCases, unionDecoderBranch{Match: value, Body: g.renderEmbeddedFragment("union-case", values[value])})
+		}
+	} else {
+		allPrimitive := len(union.Variants) > 0
+		hasPrimitive := false
+		seen := map[string]bool{}
+		for _, variant := range union.Variants {
+			typ := primitiveSchema(variant.Node)
+			if typ == "" {
+				allPrimitive = false
+				continue
+			}
+			hasPrimitive = true
+			if seen[typ] {
+				continue
+			}
+			seen[typ] = true
+			cases := map[string]string{"string": `case '"':`, "number": `case '-', '0','1','2','3','4','5','6','7','8','9':`, "boolean": `case 't','f':`}
+			if c, ok := cases[typ]; ok {
+				d.TokenCases = append(d.TokenCases, unionDecoderTokenBranch{Cases: c, Body: g.renderEmbeddedFragment("union-case", variant)})
+			}
+		}
+		if !allPrimitive {
+			d.Mixed = hasPrimitive && len(d.TokenCases) > 0
+			for _, variant := range union.Variants {
+				if primitiveSchema(variant.Node) == "" && len(variant.Node.Required) > 0 {
+					d.ObjectBranches = append(d.ObjectBranches, unionDecoderBranch{Match: jsonMatchCondition(variant), Body: g.renderEmbeddedFragment("union-case", variant)})
+				}
+			}
+		}
+	}
+	return g.renderEmbeddedFragment("union-decoder", d)
+}
+
+func jsonMatchCondition(variant unionVariant) string {
+	parts := make([]string, 0, len(variant.Node.Required)+len(variant.Node.Properties))
+	for _, field := range sortedSetBool(variant.Node.Required) {
+		parts = append(parts, fmt.Sprintf("hasJSONField(envelope, %q)", field))
+	}
+	for _, field := range sortedKeysNode(variant.Node.Properties) {
+		if typ := primitiveSchema(variant.Node.Properties[field]); typ != "" {
+			parts = append(parts, fmt.Sprintf("(!hasJSONField(envelope, %q) || jsonTypeIs(envelope[%q], %q))", field, field, typ))
+		}
+	}
+	if len(parts) == 0 {
+		return "true"
+	}
+	return strings.Join(parts, " && ")
+}
+
+func unionDiscriminator(variants []unionVariant) (string, map[string]unionVariant) {
+	values := map[string]unionVariant{}
+	field := ""
+	for _, v := range variants {
+		for name, prop := range v.Node.Properties {
+			if prop.HasConst {
+				if value, ok := prop.Const.(string); ok {
+					if field == "" {
+						field = name
+					}
+					if field == name {
+						values[value] = v
+					}
+				}
+			}
+		}
+	}
+	if len(values) != len(variants) {
+		return "", nil
+	}
+	return field, values
+}
+
+func primitiveSchema(node *schemaNode) string {
+	if node == nil {
+		return ""
+	}
+	types := withoutNull(node.Types)
+	if len(types) == 1 {
+		switch types[0] {
+		case "string":
+			return "string"
+		case "number", "integer":
+			return "number"
+		case "boolean":
+			return "boolean"
+		}
+	}
+	return ""
+}
+
+func sortedSetBool(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedKeysNode(m map[string]*schemaNode) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedStringKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (g *nativeGenerator) addStructDecl(name string, node *schemaNode) {
+	if g.alreadyGenerated(node.Pointer) {
+		return
+	}
+
+	var fields []string
+	usedFields := map[string]string{}
+	for _, propertyName := range sortedStructPropertyNames(node) {
+		prop := node.Properties[propertyName]
+		if prop == nil {
+			prop = unconstrainedProperty(node, propertyName)
+		}
+		fieldName := g.exportedIdentifier(firstNonEmpty(prop.XGoName, propertyName))
+		if previous, exists := usedFields[fieldName]; exists {
+			g.addError(
+				projector.CodeNameConflict,
+				fmt.Sprintf("properties %q and %q both generate field name %s", previous, propertyName, fieldName),
+				prop.Pointer,
+				"",
+			)
+			continue
+		}
+		usedFields[fieldName] = propertyName
+
+		fieldType := g.fieldGoType(prop, name+fieldName, node.Required[propertyName])
+		tag, ok := g.structTag(propertyName, node.Required[propertyName], prop.Pointer)
+		if !ok {
+			continue
+		}
+
+		line := fmt.Sprintf("\t%s %s", fieldName, fieldType)
+		if tag != "" {
+			line += fmt.Sprintf(" `%s`", tag)
+		}
+		if prop.Description != "" {
+			fields = append(fields, fmt.Sprintf("\t// %s\n%s", docComment(fieldName, prop.Description), line))
+		} else {
+			fields = append(fields, line)
+		}
+	}
+
+	methods := []string{}
+	for _, propertyName := range sortedStructPropertyNames(node) {
+		prop := node.Properties[propertyName]
+		if prop == nil || !g.containsUnion(prop) {
+			continue
+		}
+		fieldName := g.exportedIdentifier(firstNonEmpty(prop.XGoName, propertyName))
+		unionName, slice := unionFieldName(g, prop, name+fieldName)
+		g.needsJSON = true
+		decoder := "Unmarshal" + unionName
+		if slice {
+			decoder += "Slice"
+		}
+		methods = append(methods, g.renderEmbeddedFragment("struct-unmarshal", structUnmarshalTemplateData{Name: name, Field: fieldName, Tag: mustJSONTag(propertyName), Decoder: decoder}))
+	}
+	description := ""
+	if node.Description != "" {
+		description = docComment(name, node.Description)
+	}
+	body := g.renderEmbeddedFragment("struct", structTemplateData{
+		Name: name, Description: description, Fields: fields, Methods: methods,
+	})
+	g.addDecl(name, node.Pointer, body)
+}
+
+func (g *nativeGenerator) containsUnion(node *schemaNode) bool {
+	if node == nil {
+		return false
+	}
+	if node.Ref != "" {
+		if name, ok := localDefinitionRef(node.Ref); ok {
+			node = g.defs[name]
+		}
+	}
+	return node != nil && (len(node.OneOf) > 0 || len(node.AnyOf) > 0 || (node.Items != nil && (len(node.Items.OneOf) > 0 || len(node.Items.AnyOf) > 0)))
+}
+
+func unionFieldName(g *nativeGenerator, node *schemaNode, context string) (string, bool) {
+	if node.Items != nil && (len(node.Items.OneOf) > 0 || len(node.Items.AnyOf) > 0) {
+		return g.schemaGoType(node.Items, context+"Item").Expr, true
+	}
+	return g.schemaGoType(node, context).Expr, false
+}
+
+func (g *nativeGenerator) addAliasDecl(name, underlying string, node *schemaNode) {
+	if g.alreadyGenerated(node.Pointer) {
+		return
+	}
+	if underlying == "" {
+		underlying = "any"
+	}
+
+	description := ""
+	if node.Description != "" {
+		description = docComment(name, node.Description)
+	}
+	body := g.renderEmbeddedFragment("alias", aliasTemplateData{Name: name, Description: description, Underlying: underlying})
+	if constants := g.enumConstants(name, node); len(constants) > 0 {
+		constantLines := make([]string, 0, len(constants))
+		for _, constant := range constants {
+			constantLines = append(constantLines, fmt.Sprintf("\t%s %s = %s", constant.Name, name, constant.Value))
+		}
+		body += g.renderEmbeddedFragment("constants", constantLines)
+	}
+	g.addDecl(name, node.Pointer, body)
+}

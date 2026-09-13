@@ -1,0 +1,5 @@
+	var value {{.Type}}
+	if err := json.Unmarshal(data, &value); err != nil {
+		return zero, err
+	}
+	return value, nil

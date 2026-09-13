@@ -1,0 +1,7 @@
+{{if .Description}}// {{.Description}}
+{{end}}type {{.Name}} struct {
+{{range .Fields}}{{.}}
+{{end}}}
+{{range .Methods}}
+{{.}}
+{{end}}

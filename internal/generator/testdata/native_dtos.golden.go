@@ -3,6 +3,6 @@
 package component
 
 type Person struct {
-	Age  *int   `json:"age,omitempty"`
+	Age  *int   `json:"age,omitzero"`
 	Name string `json:"name"`
 }

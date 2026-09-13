@@ -164,6 +164,16 @@ type GoGenerateConfig struct {
 	Tags []string `json:"tags,omitempty" yaml:"tags,omitempty"`
 	// Capitalizations contains additional words treated as initialisms.
 	Capitalizations []string `json:"capitalizations,omitempty" yaml:"capitalizations,omitempty"`
+	// Unions controls generated interface dispatch.
+	Unions UnionGenerateConfig `json:"unions" yaml:"unions,omitempty"`
+}
+
+// UnionGenerateConfig controls generated union decoders.
+type UnionGenerateConfig struct {
+	// Dispatch is "token" (the default) or "schema-validation".
+	Dispatch string `json:"dispatch,omitempty" yaml:"dispatch,omitempty"`
+	// Ambiguous controls overlapping candidates. The default is "error".
+	Ambiguous string `json:"ambiguous,omitempty" yaml:"ambiguous,omitempty"`
 }
 
 // DefaultConfig returns the configuration defaults used by the CLI and APIs.

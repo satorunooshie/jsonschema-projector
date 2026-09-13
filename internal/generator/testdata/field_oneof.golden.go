@@ -2,16 +2,76 @@
 
 package component
 
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+)
+
+var (
+	ErrUnknownVariant   = errors.New("unknown union variant")
+	ErrAmbiguousVariant = errors.New("ambiguous union variant")
+)
+
+func hasJSONField(value map[string]json.RawMessage, name string) bool {
+	_, ok := value[name]
+	return ok
+}
+
+func jsonTypeIs(raw json.RawMessage, want string) bool {
+	for _, c := range raw {
+		if c == ' ' || c == '\n' || c == '\r' || c == '\t' {
+			continue
+		}
+		switch want {
+		case "string":
+			return c == '"'
+		case "object":
+			return c == '{'
+		case "array":
+			return c == '['
+		case "boolean":
+			return c == 't' || c == 'f'
+		case "number":
+			return c == '-' || (c >= '0' && c <= '9')
+		case "null":
+			return c == 'n'
+		}
+		return false
+	}
+	return false
+}
+
 type Component interface {
 	isComponent()
 }
 
-type ContainerChild interface {
-	isContainerChild()
+type Container struct {
+	Child ContainerChild `json:"child,omitzero"`
 }
 
-type Container struct {
-	Child ContainerChild `json:"child,omitempty"`
+func (v *Container) UnmarshalJSON(data []byte) error {
+	type Alias Container
+	var aux struct {
+		*Alias
+		Child json.RawMessage `json:"child"`
+	}
+	aux.Alias = (*Alias)(v)
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if len(aux.Child) != 0 {
+		decoded, err := UnmarshalContainerChild(aux.Child)
+		if err != nil {
+			return err
+		}
+		v.Child = decoded
+	}
+	return nil
+}
+
+type ContainerChild interface {
+	isContainerChild()
 }
 
 type Image struct {
@@ -29,3 +89,247 @@ func (Image) isContainerChild() {}
 func (Text) isComponent() {}
 
 func (Text) isContainerChild() {}
+
+// UnmarshalComponent decodes one of the generated Component variants.
+func UnmarshalComponent(data []byte) (Component, error) {
+	var zero Component
+
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return zero, err
+	}
+	matches := 0
+	if hasJSONField(envelope, "value") && (!hasJSONField(envelope, "value") || jsonTypeIs(envelope["value"], "string")) {
+		matches++
+	}
+	if hasJSONField(envelope, "url") && (!hasJSONField(envelope, "url") || jsonTypeIs(envelope["url"], "string")) {
+		matches++
+	}
+	if matches != 1 {
+		if matches > 1 {
+			return zero, ErrAmbiguousVariant
+		}
+		return zero, ErrUnknownVariant
+	}
+	if hasJSONField(envelope, "value") && (!hasJSONField(envelope, "value") || jsonTypeIs(envelope["value"], "string")) {
+		var value Text
+		if err := json.Unmarshal(data, &value); err != nil {
+			return zero, err
+		}
+		return value, nil
+	}
+	if hasJSONField(envelope, "url") && (!hasJSONField(envelope, "url") || jsonTypeIs(envelope["url"], "string")) {
+		var value Image
+		if err := json.Unmarshal(data, &value); err != nil {
+			return zero, err
+		}
+		return value, nil
+	}
+	return zero, ErrUnknownVariant
+}
+
+func UnmarshalComponentSlice(data []byte) ([]Component, error) {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	values := make([]Component, len(raw))
+	for i, item := range raw {
+		value, err := UnmarshalComponent(item)
+		if err != nil {
+			return nil, fmt.Errorf("Component[%d]: %w", i, err)
+		}
+		values[i] = value
+	}
+	return values, nil
+}
+
+// UnmarshalComponentSchemaValidated dispatches by asking the application
+// validator whether each candidate schema accepts data. The validator must
+// implement the complete JSON Schema semantics for the candidate, including
+// nested refs, allOf, anyOf, formats, and annotations relevant to the app.
+// The bool result means "candidate matches"; operational errors are returned.
+func UnmarshalComponentSchemaValidated(data []byte, validate func(string, []byte) (bool, error)) (Component, error) {
+	var zero Component
+	if validate == nil {
+		return zero, errors.New("Component schema validator is nil")
+	}
+	matches := 0
+	matched := ""
+	var valid bool
+	var err error
+	valid, err = validate("Text", data)
+	if err != nil {
+		return zero, err
+	}
+	if valid {
+		matches++
+		matched = "Text"
+	}
+	valid, err = validate("Image", data)
+	if err != nil {
+		return zero, err
+	}
+	if valid {
+		matches++
+		matched = "Image"
+	}
+	if matches != 1 {
+		if matches > 1 {
+			return zero, ErrAmbiguousVariant
+		}
+		return zero, ErrUnknownVariant
+	}
+	switch matched {
+	case "Text":
+		var value Text
+		if err := json.Unmarshal(data, &value); err != nil {
+			return zero, err
+		}
+		return value, nil
+	case "Image":
+		var value Image
+		if err := json.Unmarshal(data, &value); err != nil {
+			return zero, err
+		}
+		return value, nil
+	}
+	return zero, ErrUnknownVariant
+}
+
+// UnmarshalComponentValidated decodes a variant and delegates full JSON
+// Schema validation to the application.
+func UnmarshalComponentValidated(data []byte, validate func([]byte) error) (Component, error) {
+	value, err := UnmarshalComponent(data)
+	if err != nil {
+		return value, err
+	}
+	if validate != nil {
+		if err := validate(data); err != nil {
+			return value, err
+		}
+	}
+	return value, nil
+}
+
+// UnmarshalContainerChild decodes one of the generated ContainerChild variants.
+func UnmarshalContainerChild(data []byte) (ContainerChild, error) {
+	var zero ContainerChild
+
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return zero, err
+	}
+	matches := 0
+	if hasJSONField(envelope, "value") && (!hasJSONField(envelope, "value") || jsonTypeIs(envelope["value"], "string")) {
+		matches++
+	}
+	if hasJSONField(envelope, "url") && (!hasJSONField(envelope, "url") || jsonTypeIs(envelope["url"], "string")) {
+		matches++
+	}
+	if matches != 1 {
+		if matches > 1 {
+			return zero, ErrAmbiguousVariant
+		}
+		return zero, ErrUnknownVariant
+	}
+	if hasJSONField(envelope, "value") && (!hasJSONField(envelope, "value") || jsonTypeIs(envelope["value"], "string")) {
+		var value Text
+		if err := json.Unmarshal(data, &value); err != nil {
+			return zero, err
+		}
+		return value, nil
+	}
+	if hasJSONField(envelope, "url") && (!hasJSONField(envelope, "url") || jsonTypeIs(envelope["url"], "string")) {
+		var value Image
+		if err := json.Unmarshal(data, &value); err != nil {
+			return zero, err
+		}
+		return value, nil
+	}
+	return zero, ErrUnknownVariant
+}
+
+func UnmarshalContainerChildSlice(data []byte) ([]ContainerChild, error) {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	values := make([]ContainerChild, len(raw))
+	for i, item := range raw {
+		value, err := UnmarshalContainerChild(item)
+		if err != nil {
+			return nil, fmt.Errorf("ContainerChild[%d]: %w", i, err)
+		}
+		values[i] = value
+	}
+	return values, nil
+}
+
+// UnmarshalContainerChildSchemaValidated dispatches by asking the application
+// validator whether each candidate schema accepts data. The validator must
+// implement the complete JSON Schema semantics for the candidate, including
+// nested refs, allOf, anyOf, formats, and annotations relevant to the app.
+// The bool result means "candidate matches"; operational errors are returned.
+func UnmarshalContainerChildSchemaValidated(data []byte, validate func(string, []byte) (bool, error)) (ContainerChild, error) {
+	var zero ContainerChild
+	if validate == nil {
+		return zero, errors.New("ContainerChild schema validator is nil")
+	}
+	matches := 0
+	matched := ""
+	var valid bool
+	var err error
+	valid, err = validate("Text", data)
+	if err != nil {
+		return zero, err
+	}
+	if valid {
+		matches++
+		matched = "Text"
+	}
+	valid, err = validate("Image", data)
+	if err != nil {
+		return zero, err
+	}
+	if valid {
+		matches++
+		matched = "Image"
+	}
+	if matches != 1 {
+		if matches > 1 {
+			return zero, ErrAmbiguousVariant
+		}
+		return zero, ErrUnknownVariant
+	}
+	switch matched {
+	case "Text":
+		var value Text
+		if err := json.Unmarshal(data, &value); err != nil {
+			return zero, err
+		}
+		return value, nil
+	case "Image":
+		var value Image
+		if err := json.Unmarshal(data, &value); err != nil {
+			return zero, err
+		}
+		return value, nil
+	}
+	return zero, ErrUnknownVariant
+}
+
+// UnmarshalContainerChildValidated decodes a variant and delegates full JSON
+// Schema validation to the application.
+func UnmarshalContainerChildValidated(data []byte, validate func([]byte) error) (ContainerChild, error) {
+	value, err := UnmarshalContainerChild(data)
+	if err != nil {
+		return value, err
+	}
+	if validate != nil {
+		if err := validate(data); err != nil {
+			return value, err
+		}
+	}
+	return value, nil
+}

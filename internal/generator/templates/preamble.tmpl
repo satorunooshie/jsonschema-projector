@@ -1,0 +1,36 @@
+{{if .NeedsErrors}}
+var (
+	ErrUnknownVariant = errors.New("unknown union variant")
+	ErrAmbiguousVariant = errors.New("ambiguous union variant")
+)
+{{end}}
+{{if .NeedsJSON}}
+func hasJSONField(value map[string]json.RawMessage, name string) bool {
+	_, ok := value[name]
+	return ok
+}
+
+func jsonTypeIs(raw json.RawMessage, want string) bool {
+	for _, c := range raw {
+		if c == ' ' || c == '\n' || c == '\r' || c == '\t' {
+			continue
+		}
+		switch want {
+		case "string":
+			return c == '"'
+		case "object":
+			return c == '{'
+		case "array":
+			return c == '['
+		case "boolean":
+			return c == 't' || c == 'f'
+		case "number":
+			return c == '-' || (c >= '0' && c <= '9')
+		case "null":
+			return c == 'n'
+		}
+		return false
+	}
+	return false
+}
+{{end}}

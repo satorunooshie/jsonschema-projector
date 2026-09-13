@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
+	"go/format"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,8 @@ import (
 
 	"github.com/satorunooshie/jsonschema-projector/projector"
 )
+
+var golden = flag.Bool("golden", false, "golden fixtureを再生成する")
 
 func FuzzGenerateGoNeverPanicsOnJSONObjects(f *testing.F) {
 	for _, seed := range []string{
@@ -77,7 +81,7 @@ func TestGenerateGoWritesNativeDTOs(t *testing.T) {
 		"type Person struct",
 		"Age",
 		"*int",
-		"`json:\"age,omitempty\"`",
+		"`json:\"age,omitzero\"`",
 		"Name string `json:\"name\"`",
 	} {
 		if !strings.Contains(generated, want) {
@@ -91,7 +95,6 @@ func TestGenerateGoMatchesGoldenAndCompiles(t *testing.T) {
 		name   string
 		cfg    projector.GoGenerateConfig
 		schema map[string]any
-		golden string
 	}{
 		{
 			name: "native DTOs",
@@ -100,7 +103,6 @@ func TestGenerateGoMatchesGoldenAndCompiles(t *testing.T) {
 				Output:  "-",
 			},
 			schema: nativeDTOSchema(),
-			golden: "native_dtos.golden.go",
 		},
 		{
 			name: "root oneOf",
@@ -110,7 +112,6 @@ func TestGenerateGoMatchesGoldenAndCompiles(t *testing.T) {
 				RootType: "Component",
 			},
 			schema: componentUnionSchema(),
-			golden: "root_oneof.golden.go",
 		},
 		{
 			name: "field oneOf",
@@ -119,14 +120,13 @@ func TestGenerateGoMatchesGoldenAndCompiles(t *testing.T) {
 				Output:  "-",
 			},
 			schema: fieldOneOfSchema(),
-			golden: "field_oneof.golden.go",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			source := generateGoSource(t, tt.cfg, tt.schema)
-			assertGolden(t, source, tt.golden)
+			assertGoldenFile(t, source, goldenFileName(t.Name(), ".golden.go"))
 			assertGeneratedPackageCompiles(t, source)
 		})
 	}
@@ -239,7 +239,7 @@ func TestGenerateGoRepresentsFieldOneOfAsClosedInterface(t *testing.T) {
 	generated := stdout.String()
 	for _, want := range []string{
 		"type ContainerChild interface {\n\tisContainerChild()\n}",
-		"Child ContainerChild `json:\"child,omitempty\"`",
+		"Child ContainerChild `json:\"child,omitzero\"`",
 		"func (Image) isContainerChild() {}",
 		"func (Text) isContainerChild() {}",
 	} {
@@ -249,7 +249,100 @@ func TestGenerateGoRepresentsFieldOneOfAsClosedInterface(t *testing.T) {
 	}
 }
 
-func TestGenerateGoRejectsUnsupportedOneOfMembers(t *testing.T) {
+func TestGenerateGoEmitsUnionDecodersAndPrimitiveWrappers(t *testing.T) {
+	schema := map[string]any{
+		"anyOf": []any{map[string]any{"type": "string"}, map[string]any{"type": "boolean"}},
+	}
+	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-", RootType: "Value"}, schema)
+	assertGoldenFile(t, source, "primitive_anyof.golden.go")
+	for _, want := range []string{
+		"type Value interface",
+		"type StringValue string",
+		"type BooleanValue bool",
+		"func UnmarshalValue(data []byte) (Value, error)",
+		"func UnmarshalValueSlice(data []byte) ([]Value, error)",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("generated union source does not contain %q:\n%s", want, source)
+		}
+	}
+	assertGeneratedPackageCompiles(t, source)
+}
+
+func TestGenerateGoEmitsDiscriminatorDispatch(t *testing.T) {
+	schema := map[string]any{
+		"oneOf": []any{map[string]any{"$ref": "#/$defs/Button"}, map[string]any{"$ref": "#/$defs/Text"}},
+		"$defs": map[string]any{
+			"Button": map[string]any{"type": "object", "properties": map[string]any{"component": map[string]any{"const": "Button"}}, "required": []any{"component"}},
+			"Text":   map[string]any{"type": "object", "properties": map[string]any{"component": map[string]any{"const": "Text"}}, "required": []any{"component"}},
+		},
+	}
+	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-", RootType: "Component"}, schema)
+	if !strings.Contains(source, "switch discriminator") || !strings.Contains(source, `case "Button":`) || !strings.Contains(source, `case "Text":`) {
+		t.Fatalf("expected discriminator dispatch:\n%s", source)
+	}
+	assertGeneratedPackageCompiles(t, source)
+}
+
+func TestGeneratedVariantRegistryIsConcurrentAndForwardCompatible(t *testing.T) {
+	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-", RootType: "Component"}, map[string]any{
+		"oneOf": []any{map[string]any{"$ref": "#/$defs/Button"}},
+		"$defs": map[string]any{"Button": map[string]any{"type": "object", "properties": map[string]any{"component": map[string]any{"const": "Button"}}, "required": []any{"component"}}},
+	})
+	assertGeneratedPackageTestsGolden(t, source, "registry.golden_test.go")
+}
+
+func TestGeneratedUnionDecodersDecodeJSON(t *testing.T) {
+	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-", RootType: "Component"}, componentUnionSchema())
+	assertGeneratedPackageTestsGolden(t, source, "union_decode.golden_test.go")
+}
+
+func TestGeneratedAnyOfRejectsMultipleSchemaMatches(t *testing.T) {
+	schema := componentUnionSchema()
+	schema["anyOf"] = schema["oneOf"]
+	delete(schema, "oneOf")
+	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-", RootType: "Component"}, schema)
+	assertGeneratedPackageTestsGolden(t, source, "union_decode.golden_test.go")
+}
+
+func TestGeneratedSchemaValidatedDispatchHonorsMatchCardinality(t *testing.T) {
+	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-", RootType: "Component"}, componentUnionSchema())
+	assertGeneratedPackageTestsGolden(t, source, "schema_validated_dispatch.golden_test.go")
+}
+
+func TestGeneratedSchemaValidationDispatchConfig(t *testing.T) {
+	cfg := projector.GoGenerateConfig{
+		Package:  "component",
+		Output:   "-",
+		RootType: "Component",
+		Unions:   projector.UnionGenerateConfig{Dispatch: "schema-validation"},
+	}
+	source := generateGoSource(t, cfg, componentUnionSchema())
+	assertGoldenFile(t, source, "schema_validation.golden.go")
+	assertGeneratedPackageTestsGolden(t, source, "schema_dispatch.golden_test.go")
+}
+
+func TestGeneratedInterfaceFieldAndSliceDecode(t *testing.T) {
+	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-"}, fieldOneOfSchema())
+	assertGeneratedPackageTestsGolden(t, source, "interface_field.golden_test.go")
+}
+
+func FuzzGenerateGoUnionSource(f *testing.F) {
+	f.Add([]byte(`{"oneOf":[{"type":"string"},{"type":"boolean"}]}`))
+	f.Add([]byte(`{"anyOf":[{"type":"string"},{"type":"number"}]}`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var schema map[string]any
+		if json.Unmarshal(data, &schema) != nil {
+			t.Skip()
+		}
+		_, _, err := GenerateGoSource(context.Background(), projector.GoGenerateConfig{Package: "generated", Output: "-", RootType: "Value"}, schema)
+		if err != nil && err != context.Canceled {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestGenerateGoSupportsInlinePrimitiveUnionMembers(t *testing.T) {
 	var stdout bytes.Buffer
 	schema := map[string]any{
 		"$defs": map[string]any{
@@ -269,11 +362,11 @@ func TestGenerateGoRejectsUnsupportedOneOfMembers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !diagnostics.HasErrors() {
-		t.Fatalf("expected diagnostics, got %v", diagnostics)
+	if diagnostics.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %v", diagnostics)
 	}
-	if stdout.Len() != 0 {
-		t.Fatalf("expected no generated source, got:\n%s", stdout.String())
+	if !strings.Contains(stdout.String(), "type StringValue string") {
+		t.Fatalf("expected primitive wrapper, got:\n%s", stdout.String())
 	}
 }
 
@@ -294,14 +387,6 @@ func TestGenerateGoReportsUnsupportedSchemas(t *testing.T) {
 			}),
 			wantPointer: "#/$defs/Thing/allOf/1",
 			wantMessage: "incompatible generated shapes",
-		},
-		{
-			name: "heterogeneous anyOf",
-			schema: schemaWithDef("Thing", map[string]any{
-				"anyOf": []any{map[string]any{"type": "string"}, map[string]any{"type": "integer"}},
-			}),
-			wantPointer: "#/$defs/Thing/anyOf/1",
-			wantMessage: "single representable DTO shape",
 		},
 		{
 			name:        "conditional",
@@ -341,16 +426,6 @@ func TestGenerateGoReportsUnsupportedSchemas(t *testing.T) {
 			schema:      schemaWithDef("Thing", map[string]any{"$ref": "#/$defs/Outer/Inner"}),
 			wantPointer: "#/$defs/Thing",
 			wantMessage: "only local direct $defs refs are supported",
-		},
-		{
-			name: "inline oneOf member",
-			schema: schemaWithDef("Thing", map[string]any{
-				"oneOf": []any{
-					map[string]any{"type": "string"},
-				},
-			}),
-			wantPointer: "#/$defs/Thing/oneOf/0",
-			wantMessage: "native oneOf support requires every member to be a $ref",
 		},
 		{
 			name:        "non string enum",
@@ -732,12 +807,67 @@ func generateGoSource(t *testing.T, cfg projector.GoGenerateConfig, schema map[s
 	return stdout.String()
 }
 
-func assertGolden(t *testing.T, generated, path string) {
+func assertGoldenFile(t *testing.T, generated, path string) {
 	t.Helper()
 
-	want := readFile(t, filepath.Join("testdata", path))
+	goldenPath := filepath.Join("testdata", path)
+	if *golden {
+		if err := os.WriteFile(goldenPath, []byte(generated), 0o644); err != nil {
+			t.Fatalf("update golden %s: %v", path, err)
+		}
+		return
+	}
+	want := readFile(t, goldenPath)
+	formatted, err := format.Source([]byte(want))
+	if err != nil {
+		t.Fatalf("golden source %s is not valid Go: %v", path, err)
+	}
+	if normalizeNewlines(string(formatted)) != normalizeNewlines(want) {
+		t.Fatalf("golden source %s is not gofmt-formatted", path)
+	}
 	if normalizeNewlines(generated) != normalizeNewlines(want) {
-		t.Fatalf("generated Go source differs from %s\nwant:\n%s\ngot:\n%s", path, want, generated)
+		t.Fatalf("generated Go source differs from %s at line %d\nwant: %s\ngot:  %s", path, firstDifferentLine(want, generated), lineAt(want, firstDifferentLine(want, generated)), lineAt(generated, firstDifferentLine(want, generated)))
+	}
+}
+
+func goldenFileName(testName, suffix string) string {
+	if slash := strings.LastIndexByte(testName, '/'); slash >= 0 {
+		testName = testName[slash+1:]
+	}
+	var builder strings.Builder
+	separator := false
+	for _, r := range strings.ToLower(testName) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			separator = false
+			builder.WriteRune(r)
+			continue
+		}
+		if builder.Len() == 0 || separator {
+			continue
+		}
+		builder.WriteByte('_')
+		separator = true
+	}
+	return strings.TrimSuffix(builder.String(), "_") + suffix
+}
+
+func TestGoldenFileNameUsesSubtestLeaf(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		want string
+	}{
+		{name: "TestGenerate/root oneOf", want: "root_oneof.golden.go"},
+		{name: "TestGenerate/native DTOs", want: "native_dtos.golden.go"},
+		{name: "TestGenerate/primitive.anyOf", want: "primitive_anyof.golden.go"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := goldenFileName(tc.name, ".golden.go"); got != tc.want {
+				t.Fatalf("goldenFileName(%q) = %q, want %q", tc.name, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -760,6 +890,53 @@ func assertGeneratedPackageCompiles(t *testing.T, source string) {
 	}
 }
 
+func assertGeneratedPackageTestsGolden(t *testing.T, source, golden string) {
+	t.Helper()
+	testSource := readFile(t, filepath.Join("testdata", golden))
+	formatted, err := format.Source([]byte(testSource))
+	if err != nil {
+		t.Fatalf("golden generated test %s is not valid gofmt input: %v", golden, err)
+	}
+	if string(formatted) != testSource {
+		t.Fatalf("golden generated test %s is not gofmt-formatted", golden)
+	}
+	dir := t.TempDir()
+	for path, data := range map[string][]byte{
+		"go.mod":        []byte("module example.com/generated\n\ngo 1.22\n"),
+		"types.gen.go":  []byte(source),
+		"types_test.go": []byte(testSource),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, path), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = dir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generated package tests failed: %v\n%s\nsource:\n%s", err, string(output), source)
+	}
+}
+
+func firstDifferentLine(want, got string) int {
+	wantLines := strings.Split(normalizeNewlines(want), "\n")
+	gotLines := strings.Split(normalizeNewlines(got), "\n")
+	limit := min(len(wantLines), len(gotLines))
+	for i := range limit {
+		if wantLines[i] != gotLines[i] {
+			return i + 1
+		}
+	}
+	return limit + 1
+}
+
+func lineAt(source string, line int) string {
+	lines := strings.Split(normalizeNewlines(source), "\n")
+	if line < 1 || line > len(lines) {
+		return "<missing>"
+	}
+	return strings.TrimSpace(lines[line-1])
+}
+
 func assertUnsupportedDiagnostic(t *testing.T, diagnostics projector.Diagnostics, pointer, message string) {
 	t.Helper()
 
@@ -769,6 +946,94 @@ func assertUnsupportedDiagnostic(t *testing.T, diagnostics projector.Diagnostics
 		}
 	}
 	t.Fatalf("expected unsupported schema diagnostic at %s containing %q, got %v", pointer, message, diagnostics)
+}
+
+func TestUnionGenerationMatrix(t *testing.T) {
+	cases := []struct {
+		name      string
+		schema    map[string]any
+		root      string
+		want      []string
+		wantError bool
+	}{
+		{name: "primitive anyOf", schema: map[string]any{"anyOf": []any{map[string]any{"type": "string"}, map[string]any{"type": "boolean"}}}, root: "Value", want: []string{"type StringValue string", "type BooleanValue bool", "func UnmarshalValue"}},
+		{name: "ambiguous number", schema: map[string]any{"anyOf": []any{map[string]any{"type": "integer"}, map[string]any{"type": "number"}}}, root: "Value", wantError: true},
+		{name: "allOf object", schema: schemaWithDef("Value", map[string]any{"allOf": []any{map[string]any{"type": "object", "required": []any{"id"}}, map[string]any{"properties": map[string]any{"id": map[string]any{"type": "string"}}}}}), want: []string{"type Value struct", "ID string"}},
+		{name: "recursive object", schema: map[string]any{"$defs": map[string]any{"Node": map[string]any{"type": "object", "properties": map[string]any{"next": map[string]any{"$ref": "#/$defs/Node"}}}}}, want: []string{"type Node struct", "Next *Node"}},
+		{
+			name: "nested allOf refs",
+			schema: map[string]any{"$defs": map[string]any{
+				"Base":  map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}}, "required": []any{"id"}},
+				"Value": map[string]any{"allOf": []any{map[string]any{"$ref": "#/$defs/Base"}, map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}}, "required": []any{"label"}}}},
+			}},
+			want: []string{"type Value struct", "ID string", "Label string"},
+		},
+		{
+			name: "recursive nested allOf",
+			schema: schemaWithDef("Node", map[string]any{"allOf": []any{
+				map[string]any{"type": "object", "properties": map[string]any{
+					"value": map[string]any{"type": "string"},
+					"next":  map[string]any{"$ref": "#/$defs/Node"},
+				}, "required": []any{"value"}},
+			}}),
+			want: []string{"type Node struct", "Value string", "Next", "*Node"},
+		},
+		{
+			name: "nested anyOf refs",
+			schema: map[string]any{"$defs": map[string]any{
+				"Choice": map[string]any{"anyOf": []any{map[string]any{"$ref": "#/$defs/Text"}, map[string]any{"$ref": "#/$defs/Image"}}},
+				"Text":   map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}, "required": []any{"value"}},
+				"Image":  map[string]any{"type": "object", "properties": map[string]any{"url": map[string]any{"type": "string"}}, "required": []any{"url"}},
+			}},
+			want: []string{"type Choice interface", "func UnmarshalChoice"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			source, diagnostics, err := GenerateGoSource(context.Background(), projector.GoGenerateConfig{Package: "component", Output: "-", RootType: tc.root}, tc.schema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantError {
+				if !diagnostics.HasErrors() {
+					t.Fatal("expected generation error")
+				}
+				return
+			}
+			if diagnostics.HasErrors() {
+				t.Fatalf("unexpected diagnostics: %v", diagnostics)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(string(source), want) {
+					t.Fatalf("missing %q in generated source:\n%s", want, source)
+				}
+			}
+			assertGeneratedPackageCompiles(t, string(source))
+		})
+	}
+}
+
+func TestEmbeddedTemplatesAreComplete(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{
+		"alias",
+		"constants",
+		"preamble",
+		"source",
+		"struct",
+		"struct-unmarshal",
+		"union",
+		"union-case",
+		"union-decoder",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if source, err := embeddedTemplate(name); err != nil || strings.TrimSpace(source) == "" {
+				t.Fatalf("embedded template %q is unavailable or empty: %v", name, err)
+			}
+		})
+	}
 }
 
 func normalizeNewlines(value string) string {

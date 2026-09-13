@@ -1,0 +1,19 @@
+func (v *{{.Name}}) UnmarshalJSON(data []byte) error {
+	type Alias {{.Name}}
+	var aux struct {
+		*Alias
+		{{.Field}} json.RawMessage {{.Tag}}
+	}
+	aux.Alias = (*Alias)(v)
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if len(aux.{{.Field}}) != 0 {
+		decoded, err := {{.Decoder}}(aux.{{.Field}})
+		if err != nil {
+			return err
+		}
+		v.{{.Field}} = decoded
+	}
+	return nil
+}

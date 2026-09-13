@@ -83,9 +83,17 @@
         "output": { "type": "string", "minLength": 1 },
         "rootType": { "type": "string" },
         "tags": { "type": "array", "items": { "type": "string" } },
-        "capitalizations": { "type": "array", "items": { "type": "string" } }
+        "capitalizations": { "type": "array", "items": { "type": "string" } },
+        "unions": { "$ref": "#/$defs/unions" }
       },
       "required": ["package", "output"]
+    },
+    "unions": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "dispatch": { "enum": ["token", "schema-validation"] },
+        "ambiguous": { "enum": ["error", "first"] }
+      }
     }
   }
 }

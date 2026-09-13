@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 )
 
 var (
@@ -61,6 +62,9 @@ func (Text) isComponent() {}
 // UnmarshalComponent decodes one of the generated Component variants.
 func UnmarshalComponent(data []byte) (Component, error) {
 	var zero Component
+	if validate := lookupComponentSchemaValidator(); validate != nil {
+		return UnmarshalComponentSchemaValidated(data, validate)
+	}
 
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil {
@@ -163,6 +167,26 @@ func UnmarshalComponentSchemaValidated(data []byte, validate func(string, []byte
 		return value, nil
 	}
 	return zero, ErrUnknownVariant
+}
+
+// RegisterComponentSchemaValidator installs the application validator
+// used by the default UnmarshalComponent path. It must perform complete JSON
+// Schema validation for the candidate name it receives.
+func RegisterComponentSchemaValidator(validate func(string, []byte) (bool, error)) {
+	ComponentSchemaValidatorRegistry.Lock()
+	defer ComponentSchemaValidatorRegistry.Unlock()
+	ComponentSchemaValidatorRegistry.validate = validate
+}
+
+var ComponentSchemaValidatorRegistry = struct {
+	sync.RWMutex
+	validate func(string, []byte) (bool, error)
+}{}
+
+func lookupComponentSchemaValidator() func(string, []byte) (bool, error) {
+	ComponentSchemaValidatorRegistry.RLock()
+	defer ComponentSchemaValidatorRegistry.RUnlock()
+	return ComponentSchemaValidatorRegistry.validate
 }
 
 // UnmarshalComponentValidated decodes a variant and delegates full JSON
