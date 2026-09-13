@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -134,6 +135,13 @@ func (g *nativeGenerator) unionDecoder(union unionInfo) string {
 		allPrimitive := len(union.Variants) > 0
 		hasPrimitive := false
 		seen := map[string]bool{}
+		seenCandidateCases := map[string]bool{}
+		primitiveCounts := map[string]int{}
+		for _, variant := range union.Variants {
+			if typ := primitiveSchema(variant.Node); typ != "" {
+				primitiveCounts[typ]++
+			}
+		}
 		for _, variant := range union.Variants {
 			typ := primitiveSchema(variant.Node)
 			if typ == "" {
@@ -141,6 +149,18 @@ func (g *nativeGenerator) unionDecoder(union unionInfo) string {
 				continue
 			}
 			hasPrimitive = true
+			if primitiveCounts[typ] > 1 {
+				candidateCases := tokenCases(typ)
+				if seenCandidateCases[typ] {
+					candidateCases = ""
+				}
+				seenCandidateCases[typ] = true
+				d.TokenCandidates = append(d.TokenCandidates, unionDecoderTokenCandidate{
+					Cases: candidateCases, Type: variant.Type,
+					Condition: g.variantCondition(variant),
+				})
+				continue
+			}
 			if seen[typ] {
 				continue
 			}
@@ -151,7 +171,7 @@ func (g *nativeGenerator) unionDecoder(union unionInfo) string {
 			}
 		}
 		if !allPrimitive {
-			d.Mixed = hasPrimitive && len(d.TokenCases) > 0
+			d.Mixed = hasPrimitive && (len(d.TokenCases) > 0 || len(d.TokenCandidates) > 0)
 			for _, variant := range union.Variants {
 				if primitiveSchema(variant.Node) == "" && len(variant.Node.Required) > 0 {
 					d.ObjectBranches = append(d.ObjectBranches, unionDecoderBranch{Match: jsonMatchCondition(variant), Body: g.renderEmbeddedFragment("union-case", variant)})
@@ -160,6 +180,94 @@ func (g *nativeGenerator) unionDecoder(union unionInfo) string {
 		}
 	}
 	return g.renderEmbeddedFragment("union-decoder", d)
+}
+
+func tokenCases(typ string) string {
+	switch typ {
+	case "string":
+		return `'"'`
+	case "number":
+		return `'-', '0','1','2','3','4','5','6','7','8','9'`
+	case "boolean":
+		return `'t','f'`
+	case "null":
+		return `'n'`
+	default:
+		return ""
+	}
+}
+
+// variantCondition is intentionally limited to constraints that can be
+// evaluated without a full JSON Schema engine. If no such constraint exists,
+// the candidate remains a valid match and the generated decoder reports
+// ambiguity when another candidate also matches.
+func (g *nativeGenerator) variantCondition(variant unionVariant) string {
+	node := variant.Node
+	parts := []string{"true"}
+	typ := primitiveSchema(node)
+	if typ == "string" {
+		if node.Pattern != "" {
+			parts = append(parts, fmt.Sprintf("%s.MatchString(string(candidate))", g.regexpMatcher(node.Pattern)))
+		}
+		if node.Format != "" {
+			g.needsRegexp = true
+			patterns := map[string]string{"email": `^[^@\s]+@[^@\s]+\.[^@\s]+$`, "date": `^\d{4}-\d{2}-\d{2}$`, "time": `^\d{2}:\d{2}:\d{2}`, "date-time": `^\d{4}-\d{2}-\d{2}T`}
+			if pattern, ok := patterns[node.Format]; ok {
+				parts = append(parts, fmt.Sprintf("%s.MatchString(string(candidate))", g.regexpMatcher(pattern)))
+			}
+		}
+		if len(node.Enum) > 0 {
+			choices := make([]string, 0, len(node.Enum))
+			for _, value := range node.Enum {
+				if stringValue, ok := value.(string); ok {
+					choices = append(choices, fmt.Sprintf("string(candidate) == %q", stringValue))
+				}
+			}
+			if len(choices) > 0 {
+				parts = append(parts, "("+strings.Join(choices, " || ")+")")
+			}
+		}
+	}
+	if typ == "number" {
+		if node.Minimum != nil {
+			parts = append(parts, fmt.Sprintf("float64(candidate) >= %v", *node.Minimum))
+		}
+		if node.Maximum != nil {
+			parts = append(parts, fmt.Sprintf("float64(candidate) <= %v", *node.Maximum))
+		}
+		if node.ExclusiveMinimum != nil {
+			parts = append(parts, fmt.Sprintf("float64(candidate) > %v", *node.ExclusiveMinimum))
+		}
+		if node.ExclusiveMaximum != nil {
+			parts = append(parts, fmt.Sprintf("float64(candidate) < %v", *node.ExclusiveMaximum))
+		}
+		if len(node.Enum) > 0 {
+			choices := make([]string, 0, len(node.Enum))
+			for _, value := range node.Enum {
+				switch number := value.(type) {
+				case float64:
+					choices = append(choices, fmt.Sprintf("float64(candidate) == %v", number))
+				case json.Number:
+					choices = append(choices, fmt.Sprintf("float64(candidate) == %s", number.String()))
+				}
+			}
+			if len(choices) > 0 {
+				parts = append(parts, "("+strings.Join(choices, " || ")+")")
+			}
+		}
+	}
+	return strings.Join(parts, " && ")
+}
+
+func (g *nativeGenerator) regexpMatcher(pattern string) string {
+	if name, ok := g.regexpNames[pattern]; ok {
+		return name
+	}
+	name := fmt.Sprintf("unionPattern%d", len(g.regexpDecls)+1)
+	g.regexpNames[pattern] = name
+	g.regexpDecls = append(g.regexpDecls, fmt.Sprintf("var %s = regexp.MustCompile(%q)", name, pattern))
+	g.needsRegexp = true
+	return name
 }
 
 func jsonMatchCondition(variant unionVariant) string {

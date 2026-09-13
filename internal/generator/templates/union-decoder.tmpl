@@ -23,19 +23,36 @@ func Unmarshal{{.Name}}(data []byte) ({{.Name}}, error) {
 		}
 {{end}}		return zero, ErrUnknownVariant
 	}
-{{else if .TokenCases}}	for i := 0; i < len(data); i++ {
+{{else if or .TokenCases .TokenCandidates}}{{if .TokenCandidates}}	var selected {{.Name}}
+	matches := 0
+{{end}}	for i := 0; i < len(data); i++ {
 		if data[i] == ' ' || data[i] == '\n' || data[i] == '\r' || data[i] == '\t' {
 			continue
 		}
 		switch data[i] {
-{{range .TokenCases}}		{{.Cases}}
-{{.Body}}{{end}}		default:
+{{if .TokenCandidates}}{{range .TokenCandidates}}{{if .Cases}}		case {{.Cases}}:
+{{end}}			{
+				var candidate {{.Type}}
+				if err := json.Unmarshal(data, &candidate); err == nil && {{.Condition}} {
+					matches++
+					selected = candidate
+				}
+			}
+{{end}}{{else}}{{range .TokenCases}}		{{.Cases}}
+{{.Body}}{{end}}{{end}}		default:
 {{if .Mixed}}			break
 {{else}}			return zero, ErrUnknownVariant
 {{end}}		}
 		break
 	}
-{{if .Mixed}}	var envelope map[string]json.RawMessage
+{{if .TokenCandidates}}	if matches == 1 {
+		return selected, nil
+	}
+	if matches > 1 {
+{{if .AmbiguousFirst}}		return selected, nil
+{{else}}		return zero, ErrAmbiguousVariant
+{{end}}	}
+{{end}}{{if .Mixed}}	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return zero, err
 	}
