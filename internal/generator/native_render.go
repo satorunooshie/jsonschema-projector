@@ -536,8 +536,8 @@ func (g *nativeGenerator) addAliasDecl(name, underlying string, node *schemaNode
 			decoder = "Unmarshal" + unionName
 		}
 		itemType := "any"
-		if strings.HasPrefix(underlying, "[]") {
-			itemType = strings.TrimPrefix(underlying, "[]")
+		if after, ok := strings.CutPrefix(underlying, "[]"); ok {
+			itemType = after
 		}
 		g.needsJSON = true
 		g.needsFmt = true

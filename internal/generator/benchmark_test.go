@@ -14,8 +14,7 @@ func BenchmarkGenerateGoLarge(b *testing.B) {
 	schema := largeGeneratedSchema(1000)
 	cfg := projector.GoGenerateConfig{Package: "generated", Output: "-", Tags: []string{"json"}}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		diagnostics, err := GenerateGo(context.Background(), cfg, schema, io.Discard)
 		if err != nil || diagnostics.HasErrors() {
 			b.Fatalf("generation failed: err=%v diagnostics=%v", err, diagnostics)

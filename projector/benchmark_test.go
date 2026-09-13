@@ -17,8 +17,7 @@ func BenchmarkProjectSchemaLarge(b *testing.B) {
 	}
 	ctx := context.Background()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		result, err := ProjectSchema(ctx, doc, cfg)
 		if err != nil || result.Diagnostics.HasErrors() {
 			b.Fatalf("projection failed: err=%v diagnostics=%v", err, result.Diagnostics)
