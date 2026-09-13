@@ -6,12 +6,17 @@ type schemaNode struct {
 	Pointer string
 	Bool    *bool
 
-	Ref         string
-	Title       string
-	Description string
-	XGoName     string
-	Types       []string
-	Format      string
+	Ref              string
+	Title            string
+	Description      string
+	XGoName          string
+	Types            []string
+	Format           string
+	Pattern          string
+	Minimum          *float64
+	Maximum          *float64
+	ExclusiveMinimum *float64
+	ExclusiveMaximum *float64
 
 	Properties        map[string]*schemaNode
 	Required          map[string]bool
@@ -57,6 +62,7 @@ type sourceTemplateData struct {
 	Imports                []string
 	Preamble               string
 	NeedsErrors, NeedsJSON bool
+	RegexpDecls            []string
 	Decls                  []decl
 	Markers                []string
 	Decoders               []string
@@ -93,6 +99,7 @@ type nativeGenerator struct {
 	typeNames          map[string]string
 	usedTypeNames      map[string]string
 	generatedByPointer map[string]string
+	unionVariantTypes  map[string]string
 	decls              []decl
 	markerMethods      map[string]map[string]struct{}
 	unions             []unionInfo
@@ -100,5 +107,8 @@ type nativeGenerator struct {
 	needsErrors        bool
 	needsFmt           bool
 	needsSync          bool
+	needsRegexp        bool
+	regexpDecls        []string
+	regexpNames        map[string]string
 	diagnostics        projector.Diagnostics
 }
