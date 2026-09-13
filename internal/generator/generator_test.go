@@ -419,6 +419,85 @@ func TestDuplicateRefDiscriminatorIsGenerationError(t *testing.T) {
 	}
 }
 
+func TestNamedArrayAliasDecoderMatrix(t *testing.T) {
+	schema := schemaWithDef("PrimitiveItems", map[string]any{
+		"type": "array", "items": map[string]any{"type": "string"},
+	})
+	defs := schema["$defs"].(map[string]any)
+	defs["ObjectItems"] = map[string]any{
+		"type": "array", "items": map[string]any{
+			"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}},
+		},
+	}
+	defs["UnionItems"] = map[string]any{
+		"type": "array", "items": map[string]any{"oneOf": []any{
+			map[string]any{"$ref": "#/$defs/Foo"}, map[string]any{"$ref": "#/$defs/Bar"},
+		}},
+	}
+	defs["NestedItems"] = map[string]any{
+		"type": "array", "items": map[string]any{"$ref": "#/$defs/UnionItems"},
+	}
+	defs["Container"] = map[string]any{
+		"type": "object", "properties": map[string]any{
+			"items": map[string]any{"$ref": "#/$defs/UnionItems"},
+		},
+	}
+	defs["Foo"] = map[string]any{"type": "object", "properties": map[string]any{"kind": map[string]any{"const": "foo"}}, "required": []any{"kind"}}
+	defs["Bar"] = map[string]any{"type": "object", "properties": map[string]any{"kind": map[string]any{"const": "bar"}}, "required": []any{"kind"}}
+	defs["AmbiguousItems"] = map[string]any{
+		"type": "array", "items": map[string]any{"anyOf": []any{
+			map[string]any{"type": "object", "properties": map[string]any{"x": map[string]any{"type": "string"}, "a": map[string]any{"type": "string"}}, "required": []any{"x"}},
+			map[string]any{"type": "object", "properties": map[string]any{"x": map[string]any{"type": "string"}, "b": map[string]any{"type": "boolean"}}, "required": []any{"x"}},
+		}},
+	}
+	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-"}, schema)
+	for _, name := range []string{"PrimitiveItems", "ObjectItems", "UnionItems", "NestedItems", "AmbiguousItems"} {
+		if !strings.Contains(source, "func Unmarshal"+name+"(data []byte) ("+name+", error)") {
+			t.Fatalf("missing named array decoder for %s:\n%s", name, source)
+		}
+	}
+	assertGeneratedPackageTests(t, source, `package component
+
+import (
+	"encoding/json"
+	"errors"
+	"testing"
+)
+
+func TestNamedArrayAliasesRuntime(t *testing.T) {
+	var primitive PrimitiveItems
+	if err := json.Unmarshal([]byte("[]"), &primitive); err != nil || len(primitive) != 0 {
+		t.Fatalf("empty primitive array: %v %#v", err, primitive)
+	}
+	if _, err := UnmarshalPrimitiveItems([]byte("[1]")); err == nil {
+		t.Fatal("expected invalid primitive item error")
+	}
+	object, err := UnmarshalObjectItems([]byte("[{\"id\":\"one\"}]"))
+	if err != nil || len(object) != 1 {
+		t.Fatalf("object array: %v %#v", err, object)
+	}
+	union, err := UnmarshalUnionItems([]byte("[{\"kind\":\"foo\"},{\"kind\":\"bar\"}]"))
+	if err != nil || len(union) != 2 {
+		t.Fatalf("union array: %v %#v", err, union)
+	}
+	nested, err := UnmarshalNestedItems([]byte("[[{\"kind\":\"foo\"}]]"))
+	if err != nil || len(nested) != 1 || len(nested[0]) != 1 {
+		t.Fatalf("nested array: %v %#v", err, nested)
+	}
+	var container Container
+	if err := json.Unmarshal([]byte("{\"items\":[{\"kind\":\"foo\"}]}"), &container); err != nil || container.Items == nil || len(*container.Items) != 1 {
+		t.Fatalf("array field: %v %#v", err, container)
+	}
+	if _, err := UnmarshalUnionItems([]byte("[{\"kind\":\"unknown\"}]")); !errors.Is(err, ErrUnknownVariant) {
+		t.Fatalf("got %v, want ErrUnknownVariant", err)
+	}
+	if _, err := UnmarshalAmbiguousItems([]byte("[{\"x\":\"same\"}]")); !errors.Is(err, ErrAmbiguousVariant) {
+		t.Fatalf("got %v, want ErrAmbiguousVariant", err)
+	}
+}
+`)
+}
+
 func TestGeneratedVariantRegistryIsConcurrentAndForwardCompatible(t *testing.T) {
 	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-", RootType: "Component"}, map[string]any{
 		"oneOf": []any{map[string]any{"$ref": "#/$defs/Button"}},
