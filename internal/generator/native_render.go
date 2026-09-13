@@ -483,7 +483,11 @@ func (g *nativeGenerator) containsUnion(node *schemaNode) bool {
 	}
 	if node.Ref != "" {
 		if name, ok := localDefinitionRef(node.Ref); ok {
-			node = g.defs[name]
+			resolved := g.defs[name]
+			if g.isNamedArray(resolved) {
+				return false
+			}
+			node = resolved
 		}
 	}
 	return node != nil && (g.isUnionNode(node) ||
@@ -525,18 +529,30 @@ func (g *nativeGenerator) addAliasDecl(name, underlying string, node *schemaNode
 		}
 		body += g.renderEmbeddedFragment("constants", constantLines)
 	}
-	if g.isNamedUnionArray(node) {
-		unionName, _ := unionFieldName(g, node, name)
+	if g.isNamedArray(node) {
+		decoder := ""
+		if g.isUnionNode(node.Items) {
+			unionName, _ := unionFieldName(g, node, name)
+			decoder = "Unmarshal" + unionName
+		}
+		itemType := "any"
+		if strings.HasPrefix(underlying, "[]") {
+			itemType = strings.TrimPrefix(underlying, "[]")
+		}
 		g.needsJSON = true
 		g.needsFmt = true
 		body += g.renderEmbeddedFragment("array-unmarshal", arrayUnmarshalTemplateData{
-			Name: name, Decoder: "Unmarshal" + unionName,
+			Name: name, Decoder: decoder, ElementType: itemType,
 		})
 	}
 	g.addDecl(name, node.Pointer, body)
 }
 
-func (g *nativeGenerator) isNamedUnionArray(node *schemaNode) bool {
-	return node != nil && len(node.OneOf) == 0 && len(node.AnyOf) == 0 &&
-		len(node.TupleItems) == 0 && g.isUnionNode(node.Items)
+func (g *nativeGenerator) isNamedArray(node *schemaNode) bool {
+	if node == nil {
+		return false
+	}
+	types := withoutNull(node.Types)
+	return len(node.OneOf) == 0 && len(node.AnyOf) == 0 &&
+		len(node.TupleItems) == 0 && len(types) == 1 && types[0] == "array"
 }

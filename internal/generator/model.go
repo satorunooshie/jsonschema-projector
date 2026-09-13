@@ -91,7 +91,7 @@ type aliasTemplateData struct {
 }
 
 type arrayUnmarshalTemplateData struct {
-	Name, Decoder string
+	Name, Decoder, ElementType string
 }
 
 // nativeGenerator owns the generation state shared by schema analysis and

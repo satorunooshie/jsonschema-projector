@@ -1,15 +1,26 @@
-func (v *{{.Name}}) UnmarshalJSON(data []byte) error {
+func Unmarshal{{.Name}}(data []byte) ({{.Name}}, error) {
 	var raw []json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
+		return nil, err
 	}
 	decoded := make({{.Name}}, len(raw))
 	for i, item := range raw {
-		value, err := {{.Decoder}}(item)
+		{{if .Decoder}}value, err := {{.Decoder}}(item)
+		{{else}}var value {{.ElementType}}
+		err := json.Unmarshal(item, &value)
+		{{end}}
 		if err != nil {
-			return fmt.Errorf("{{.Name}}[%d]: %w", i, err)
+			return nil, fmt.Errorf("{{.Name}}[%d]: %w", i, err)
 		}
 		decoded[i] = value
+	}
+	return decoded, nil
+}
+
+func (v *{{.Name}}) UnmarshalJSON(data []byte) error {
+	decoded, err := Unmarshal{{.Name}}(data)
+	if err != nil {
+		return err
 	}
 	*v = decoded
 	return nil
