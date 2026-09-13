@@ -79,6 +79,7 @@
     "goGenerate": {
       "type": "object", "additionalProperties": false,
       "properties": {
+        "backend": { "enum": ["native", "go-jsonschema"] },
         "package": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
         "output": { "type": "string", "minLength": 1 },
         "rootType": { "type": "string" },

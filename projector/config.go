@@ -170,7 +170,8 @@ type GoGenerateConfig struct {
 
 // UnionGenerateConfig controls generated union decoders.
 type UnionGenerateConfig struct {
-	// Dispatch is "token" (the default) or "schema-validation".
+	// Dispatch is "token" (the default) or "schema-validation". Token
+	// dispatch is a DTO routing heuristic; it does not replace validation.
 	Dispatch string `json:"dispatch,omitempty" yaml:"dispatch,omitempty"`
 	// Ambiguous controls overlapping candidates. The default is "error".
 	Ambiguous string `json:"ambiguous,omitempty" yaml:"ambiguous,omitempty"`
