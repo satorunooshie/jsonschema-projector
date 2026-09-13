@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"go/format"
 	"os"
 	"os/exec"
@@ -316,6 +317,106 @@ func TestGenerateGoEmitsDiscriminatorDispatch(t *testing.T) {
 		t.Fatalf("expected discriminator dispatch:\n%s", source)
 	}
 	assertGeneratedPackageCompiles(t, source)
+}
+
+func TestRefDiscriminatorUnknownValueAndNamedArrayDecoder(t *testing.T) {
+	doc := map[string]any{
+		"components": map[string]any{
+			"schemas": map[string]any{
+				"Foo": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"kind": map[string]any{"const": "foo"}},
+					"required":   []any{"kind"},
+				},
+				"Bar": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"kind": map[string]any{"const": "bar"}},
+					"required":   []any{"kind"},
+				},
+				"Choice": map[string]any{"oneOf": []any{
+					map[string]any{"$ref": "#/components/schemas/Foo"},
+					map[string]any{"$ref": "#/components/schemas/Bar"},
+				}},
+				"Items": map[string]any{
+					"type": "array",
+					"items": map[string]any{"oneOf": []any{
+						map[string]any{"$ref": "#/components/schemas/Foo"},
+						map[string]any{"$ref": "#/components/schemas/Bar"},
+					}},
+				},
+			},
+		},
+	}
+	projected, err := projector.ProjectSchema(context.Background(), doc, projector.ProjectConfig{
+		IncludeDefinitions: []projector.DefinitionSource{{Pointer: "#/components/schemas"}},
+		RewriteRefs:        []projector.RefRewrite{{From: "#/components/schemas/", To: "#/$defs/"}},
+		Root:               &projector.RootSynthesis{Kind: "oneOf", From: "#/components/schemas", Names: []string{"Foo", "Bar"}},
+		CheckRefs:          true,
+	})
+	if err != nil || projected.Diagnostics.HasErrors() {
+		t.Fatalf("projection failed: %v %v", err, projected.Diagnostics)
+	}
+	source := generateGoSource(t, projector.GoGenerateConfig{Package: "component", Output: "-", RootType: "Component"}, projected.Schema)
+	for _, want := range []string{
+		"switch discriminator",
+		"case \"foo\":",
+		"case \"bar\":",
+		"type Items []ItemsItem",
+		"func (v *Items) UnmarshalJSON",
+		"func UnmarshalItemsItem",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("generated source is missing %q:\n%s", want, source)
+		}
+	}
+	assertGeneratedPackageTests(t, source, `package component
+
+import (
+	"encoding/json"
+	"errors"
+	"testing"
+)
+
+func TestProjectedRefUnionRuntime(t *testing.T) {
+	component, err := UnmarshalComponent([]byte("{\"kind\":\"foo\"}"))
+	if err != nil || component == nil {
+		t.Fatal(err)
+	}
+	if choice, err := UnmarshalChoice([]byte("{\"kind\":\"bar\"}")); err != nil || choice == nil {
+		t.Fatalf("nested union decode failed: %v", err)
+	}
+	if _, err := UnmarshalComponent([]byte("{\"kind\":\"unknown\"}")); !errors.Is(err, ErrUnknownVariant) {
+		t.Fatalf("got %v, want ErrUnknownVariant", err)
+	}
+	var items Items
+	if err := json.Unmarshal([]byte("[{\"kind\":\"foo\"},{\"kind\":\"bar\"}]"), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0] == nil || items[1] == nil {
+		t.Fatalf("got %#v, want two decoded items", items)
+	}
+}
+`)
+}
+
+func TestDuplicateRefDiscriminatorIsGenerationError(t *testing.T) {
+	schema := map[string]any{
+		"oneOf": []any{
+			map[string]any{"$ref": "#/$defs/Foo"},
+			map[string]any{"$ref": "#/$defs/Bar"},
+		},
+		"$defs": map[string]any{
+			"Foo": map[string]any{"type": "object", "properties": map[string]any{"kind": map[string]any{"const": "same"}}, "required": []any{"kind"}},
+			"Bar": map[string]any{"type": "object", "properties": map[string]any{"kind": map[string]any{"const": "same"}}, "required": []any{"kind"}},
+		},
+	}
+	_, diagnostics, err := GenerateGoSource(context.Background(), projector.GoGenerateConfig{Package: "component", Output: "-", RootType: "Component"}, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !diagnostics.HasErrors() || !strings.Contains(fmt.Sprint(diagnostics), "discriminator values must be unique") {
+		t.Fatalf("expected duplicate discriminator diagnostic, got %v", diagnostics)
+	}
 }
 
 func TestGeneratedVariantRegistryIsConcurrentAndForwardCompatible(t *testing.T) {
@@ -1348,6 +1449,7 @@ func TestEmbeddedTemplatesAreComplete(t *testing.T) {
 
 	for _, name := range []string{
 		"alias",
+		"array-unmarshal",
 		"constants",
 		"preamble",
 		"source",
